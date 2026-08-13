@@ -13,3 +13,11 @@ backups/
 releases/
 *.bak
 *.tar.gz
+
+# Cloudflare Tunnel credentials and local account certificates
+.cloudflared/
+cloudflare/credentials/
+cloudflared-token*
+tunnel-token
+cert.pem
+*.htpasswd
