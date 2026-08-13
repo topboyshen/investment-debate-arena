@@ -20,7 +20,7 @@
 | 专用账户 | `debatearena` |
 | 专用环境 | `/opt/investment-debate-arena/.venv` |
 | 后端监听 | `127.0.0.1:18766` |
-| 公网入口 | nginx `18765`（限流、并发和超时保护） |
+| 可信入口 | `https://arena.jiejiezi.ccwu.cc`（Cloudflare Tunnel → nginx 密码门） |
 | systemd 单元 | `investment-debate-arena.service` |
 | 健康检查 | `GET /healthz` |
 | 就绪检查 | `GET /readyz` |
@@ -33,8 +33,16 @@
 cd /opt/investment-debate-arena
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=app .venv/bin/python -m unittest discover -s tests -v
 curl -fsS http://127.0.0.1:18766/readyz
-curl -fsS http://127.0.0.1:18765/healthz
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18765/  # 期望 401
 ```
+
+## 可信 HTTPS 与访问控制
+
+- `cloudflared` 仅建立出站 Tunnel，路由到 `http://127.0.0.1:18765`；不会绕过 nginx 的请求体、限流、并发和超时保护。
+- nginx 对页面和 API 启用 Basic Auth，密码文件为服务器上的 `/etc/nginx/arena.htpasswd`，不进入 Git。
+- UFW 不再放行公网 `18765/tcp`；旧的 `http://23.95.122.93:18765/` 入口不可达。
+- Cloudflare Zero Trust 邮箱验证码未启用：当前免费版激活页面要求绑定支付方式并授权超额计费。若以后由账户所有者完成激活，可在不改应用的情况下用 Access 替换 Basic Auth。
+- Tunnel 的 token、账户证书、密码文件和任何凭据 JSON 都不得提交。具体部署与回滚见 `cloudflare/README.md`。
 
 `POST /api/debate` 仅接受 `application/json`，正文必须恰好包含字符串字段 `ticker` 与 `thesis`。代码格式限 `A-Z`、数字、点、脱字符和连字符，长度 1–16；观点长度为 1–600。
 
