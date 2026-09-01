@@ -1,0 +1,32 @@
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Runtime state
+data/
+*.db
+*.db-*
+*.sqlite*
+*.sock
+*.log
+*.log.*
+
+# Local environments and generated files
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Historical one-off copies
+backups/
+*.bak
+*.bak.*
+*.bak-*

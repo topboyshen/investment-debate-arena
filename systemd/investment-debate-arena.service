@@ -1,0 +1,22 @@
+[Unit]
+Description=Investment Research Debate Arena Prototype
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=debatearena
+Group=debatearena
+WorkingDirectory=/opt/investment-debate-arena/app
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/investment-debate-arena/.venv/bin/python /opt/investment-debate-arena/app/server.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/investment-debate-arena
+
+[Install]
+WantedBy=multi-user.target
