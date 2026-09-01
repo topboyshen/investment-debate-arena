@@ -9,14 +9,39 @@ User=debatearena
 Group=debatearena
 WorkingDirectory=/opt/investment-debate-arena/app
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/opt/investment-debate-arena/.venv/bin/python /opt/investment-debate-arena/app/server.py
 Restart=on-failure
 RestartSec=3
+TimeoutStopSec=10
+UMask=0027
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=full
+PrivateDevices=true
+ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/investment-debate-arena
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+MemoryHigh=96M
+MemoryMax=128M
+TasksMax=64
+LimitNOFILE=256
 
 [Install]
 WantedBy=multi-user.target
