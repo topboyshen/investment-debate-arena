@@ -39,6 +39,31 @@ class NginxAccessTests(unittest.TestCase):
         self.assertIn("listen [::1]:18765 default_server;", self.config)
         self.assertIn("include /etc/nginx/private-subscriptions.conf;", self.config)
 
+    def test_reports_have_no_public_data_alias_or_cache(self):
+        for header in ("location = /reports/data.json", "location ^~ /reports/"):
+            block = self.location(header)
+            self.assertIn('auth_basic "Netdata Monitoring";', block)
+            self.assertIn("auth_basic_user_file /etc/nginx/netdata.htpasswd;", block)
+            self.assertNotIn("auth_basic off", block)
+            self.assertIn('Cache-Control "private, no-store, max-age=0" always;', block)
+            self.assertIn('CDN-Cache-Control "no-store" always;', block)
+            self.assertIn("Strict-Transport-Security", block)
+        data = self.location("location = /reports/data.json")
+        self.assertIn("alias /var/lib/project-portal/reports.json;", data)
+        self.assertIn("disable_symlinks on;", data)
+        self.assertIn("limit_except GET { deny all; }", data)
+        self.assertIn("default_type application/json;", data)
+        self.assertEqual(self.config.count("/var/lib/project-portal"), 1)
+        self.assertNotRegex(self.config, r"(?:alias|root)\s+/opt/(?:mini-hermes|signal-gate)")
+
+    def test_exporter_has_no_network_or_business_writes(self):
+        unit = (Path(__file__).resolve().parents[1] / "systemd/project-portal-export.service").read_text()
+        self.assertIn("PrivateNetwork=yes", unit)
+        self.assertIn("ProtectSystem=strict", unit)
+        self.assertIn("ReadWritePaths=/var/lib/project-portal", unit)
+        self.assertIn("ProtectHome=yes", unit)
+        self.assertNotIn("OnFailure", unit)  # this refresh job sends no alerts
+
 
 if __name__ == "__main__":
     unittest.main()

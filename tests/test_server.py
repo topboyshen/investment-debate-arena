@@ -103,6 +103,42 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(body, b"")
         self.assert_security_headers(headers)
 
+    def test_portal_routes_and_legacy_api(self):
+        status, _, body = self.request("GET", "/")
+        self.assertEqual(status, 200)
+        self.assertIn("项目工作台", body.decode())
+        self.assertIn('href="/reports/"', body.decode())
+        self.assertNotIn("jd:stale", body.decode())
+        status, _, body = self.request("GET", "/arena/")
+        self.assertEqual(status, 200)
+        self.assertIn("/arena/api/debate", body.decode())
+        for path in ("/api/demo", "/arena/api/demo"):
+            status, _, body = self.request("GET", path)
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)["ticker"], "AAPL")
+        body = json.dumps({"ticker": "AAPL", "thesis": "验证迁移后的演示接口。"})
+        status, _, _ = self.request("POST", "/arena/api/debate", body.encode(), {"Content-Type": "application/json"})
+        self.assertEqual(status, 200)
+
+    def test_backend_cannot_serve_any_report_data(self):
+        # nginx authenticates the shell; the backend has no data route at all.
+        for path in ("/reports/data.json", "/reports/data.json?x=1", "/reports/../reports.json",
+                     "/reports%2fdata.json", "/reports//data.json", "/reports.json", "/api/reports",
+                     "/var/lib/project-portal/reports.json", "/.env", "/netdata.htpasswd"):
+            with self.subTest(path=path):
+                status, _, _ = self.request("GET", path)
+                self.assertEqual(status, 404)
+        status, _, body = self.request("GET", "/reports/")
+        self.assertEqual(status, 200)
+        self.assertNotIn("jd:stale\",\"nng8:invalid", body.decode())
+
+    def test_canonical_page_redirects(self):
+        for path in ("/arena", "/reports"):
+            status, headers, body = self.request("GET", path)
+            self.assertEqual(status, 308)
+            self.assertEqual(headers["Location"], path + "/")
+            self.assertEqual(body, b"")
+
         status, headers, body = self.request("OPTIONS", "/")
         self.assertEqual(status, 204)
         self.assertEqual(body, b"")

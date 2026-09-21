@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh the protected report snapshot without generating or sending reports
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=15s
+RandomizedDelaySec=15s
+Unit=project-portal-export.service
+
+[Install]
+WantedBy=timers.target
