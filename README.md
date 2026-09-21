@@ -45,6 +45,8 @@ Netdata 公网监控会公开主机资源、运行指标及仪表盘提供的相
 
 Netdata 自带的云账号登录是可选项。首次看到欢迎页时，选择 `Skip and use the dashboard anonymously` 即可查看图表，不必注册或输入口令。启动所需 registry 查询仅允许原始参数恰为 `action=hello`，不开放登记或修改行为。
 
+2026-09-21 已升级至 Netdata 2.11.1，软件源从停更的 PackageCloud 迁至官方 stable 源。公开代理额外拦截 MCP/SSE 及 WebSocket Upgrade，避免新版本增加远程工具执行入口；新增 OTEL 采集器在 infra 的 Netdata 配置中显式停用。
+
 ### 日报快照边界
 
 `project-portal-export.timer` 每约 5 分钟运行无网络的只读导出器。它不生成研究、不发送 Telegram、不修改业务数据。最多取每类最近 30 份已留存报告：

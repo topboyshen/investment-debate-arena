@@ -35,6 +35,7 @@ class NginxAccessTests(unittest.TestCase):
         self.assertIn('auth_basic off;', netdata)
         self.assertNotIn('auth_basic_user_file', netdata)
         self.assertIn('if ($netdata_public_blocked) { return 404; }', netdata)
+        self.assertIn('if ($http_upgrade != "") { return 404; }', netdata)
         self.assertIn('if ($request_method !~ "^(GET|HEAD)$") { return 405; }', netdata)
         self.assertIn('limit_except GET { deny all; }', netdata)
         self.assertIn('limit_req zone=netdata_cloud_per_ip burst=100 nodelay;', netdata)
@@ -71,6 +72,8 @@ class NginxAccessTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertFalse(blocked(path))
         for path in ['/netdata/netdata.conf', '/netdata/v3/netdata.conf',
+                     '/netdata/mcp', '/netdata/sse', '/netdata/v3/mcp',
+                     '/netdata/host/local/sse', '/netdata/node/local/v2/mcp',
                      '/netdata/netdata.conf?x', '/netdata/v3/netdata.conf?x',
                      '/netdata/api/v1/manage/health', '/netdata/host/localhost/api/v1/manage/health',
                      '/netdata/v2/api/v3/config', '/netdata/node/local/api/v3/function',

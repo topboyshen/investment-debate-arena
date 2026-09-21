@@ -45,9 +45,9 @@ def validate_policy(source):
             subprocess.run(['nginx','-t','-c',str(directory/'nginx.conf'),'-p',str(directory)],check=True,capture_output=True)
             process = subprocess.Popen(['nginx','-c',str(directory/'nginx.conf'),'-p',str(directory),'-g','daemon off;'],
                                        stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-            def query(path, method='GET'):
+            def query(path, method='GET', headers=None):
                 connection = http.client.HTTPConnection('127.0.0.1',port,timeout=3)
-                connection.request(method,path)
+                connection.request(method,path,headers=headers or {})
                 response = connection.getresponse()
                 status = response.status
                 response.read()
@@ -65,6 +65,8 @@ def validate_policy(source):
                        '/netdata/host/local/api/v1/info', '/netdata/node/local/v3/api/v3/settings',
                        '/netdata/api/v3/functions', '/netdata/api/v1/registry?action=hello']
             blocked = ['/netdata/netdata.conf', '/netdata/v3/netdata.conf', '/netdata/debug', '/netdata/exit',
+                       '/netdata/mcp', '/netdata/sse', '/netdata/v3/mcp',
+                       '/netdata/host/local/sse', '/netdata/node/local/v2/mcp',
                        '/netdata/netdata.conf%3Fx', '/netdata/v3/netdata.conf%3Fx',
                        '/netdata/api/v1/registry?action=access', '/netdata/api/v1/registry?action=hello&action=delete',
                        '/netdata/api/v1/registry?action=%68ello',
@@ -86,6 +88,12 @@ def validate_policy(source):
                 status = query('/netdata/api/v3/settings',method)
                 if status not in (403, 405) or len(seen) != before:
                     raise RuntimeError(f'policy_write_failed:{method}:status={status}:forwarded={len(seen) != before}')
+            for path in ['/netdata/', '/netdata/api/v3/info']:
+                before = len(seen)
+                status = query(path, headers={'Upgrade':'websocket', 'Connection':'Upgrade',
+                                             'Sec-WebSocket-Protocol':'mcp', 'Sec-WebSocket-Version':'13'})
+                if status != 404 or len(seen) != before:
+                    raise RuntimeError('policy_websocket_forwarded')
     finally:
         if process is not None:
             process.terminate()
