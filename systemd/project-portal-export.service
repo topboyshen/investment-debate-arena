@@ -1,6 +1,8 @@
 [Unit]
 Description=Read-only existing daily reports for the project portal
 After=local-fs.target
+Wants=project-portal-inputs.service
+After=project-portal-inputs.service
 
 [Service]
 Type=oneshot

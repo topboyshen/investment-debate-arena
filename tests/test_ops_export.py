@@ -1,4 +1,5 @@
 """Public operations data contracts; no network or live systemd dependencies."""
+import hashlib
 import importlib.util
 import json
 import os
@@ -16,7 +17,9 @@ SPEC.loader.exec_module(exporter)
 
 NOW = 1800516600
 CHECKED = exporter.iso(NOW - 10)
-SECRET = "PRIVATE_SENTINEL_DO_NOT_EXPORT"
+# Public, deterministic test material, never an operational credential. Keep a
+# full-length sensitive-looking value so redaction cannot pass on a short stub.
+SECRET = hashlib.sha256(b"ops export offline sensitive fixture v1").hexdigest()
 TCP_HEADER = "  sl  local_address rem_address   st\n"
 
 
@@ -29,6 +32,8 @@ class OpsExportTests(unittest.TestCase):
         return exporter.project_check(key, "Fixed label", data, NOW, max_age)
 
     def test_check_projection_exports_only_fixed_labels_not_private_details(self):
+        self.assertEqual(len(SECRET), 64)
+        self.assertRegex(SECRET, r"^[0-9a-f]{64}$")
         data = {"status": "clear", "updated_at": CHECKED,
                 "pending_codes": {"arena_business_failures": 2, SECRET: 3},
                 "details": [SECRET, "https://private.example/sub?token=" + SECRET],
