@@ -3,12 +3,15 @@ import json
 import sys
 import threading
 import unittest
+from html.parser import HTMLParser
+import xml.etree.ElementTree as ET
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 from server import Handler, SECURITY_HEADERS
 from portal_pages import HOME_PAGE, REPORTS_PAGE
+from branding import FAVICON_SVG
 
 
 class ServerTests(unittest.TestCase):
@@ -19,6 +22,54 @@ class ServerTests(unittest.TestCase):
         self.assertIn("credentials:'omit'", REPORTS_PAGE)
         self.assertIn("Netdata 监控也可免登录", HOME_PAGE)
         self.assertNotIn("独立登录", HOME_PAGE)
+
+    def test_all_portal_pages_reference_the_same_favicon(self):
+        class Icons(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.icons = []
+
+            def handle_starttag(self, tag, attrs):
+                attributes = dict(attrs)
+                if tag == "link" and "icon" in attributes.get("rel", "").split():
+                    self.icons.append(attributes)
+
+        for path in ("/", "/reports/", "/ops/", "/arena/"):
+            with self.subTest(path=path):
+                status, _, body = self.request("GET", path)
+                self.assertEqual(status, 200)
+                parser = Icons()
+                parser.feed(body.decode().split("</head>", 1)[0])
+                self.assertEqual(len(parser.icons), 1)
+                self.assertEqual(parser.icons[0]["href"], "/favicon.svg?v=1")
+                self.assertEqual(parser.icons[0]["type"], "image/svg+xml")
+
+    def test_favicon_is_static_svg_with_correct_get_and_head_headers(self):
+        for path in ("/favicon.svg", "/favicon.svg?v=1"):
+            with self.subTest(path=path):
+                status, headers, body = self.request("GET", path)
+                self.assertEqual(status, 200)
+                self.assertEqual(body, FAVICON_SVG)
+                self.assertEqual(headers["Content-Type"], "image/svg+xml")
+                self.assertEqual(int(headers["Content-Length"]), len(body))
+                self.assertEqual(headers["Cache-Control"], "public, max-age=3600")
+                self.assert_security_headers(headers)
+                head_status, head_headers, head_body = self.request("HEAD", path)
+                self.assertEqual(head_status, 200)
+                self.assertEqual(head_body, b"")
+                for key in ("Content-Type", "Content-Length", "Cache-Control"):
+                    self.assertEqual(head_headers[key], headers[key])
+        svg = ET.fromstring(FAVICON_SVG)
+        self.assertEqual(svg.attrib["viewBox"], "0 0 64 64")
+        for element in svg.iter():
+            self.assertIn(element.tag, {"{http://www.w3.org/2000/svg}" + tag for tag in ("svg", "rect", "path")})
+            self.assertFalse(any("href" in attr or attr.startswith("on") for attr in element.attrib))
+
+    def test_favicon_does_not_open_an_asset_directory_or_write_route(self):
+        for method, path in (("POST", "/favicon.svg"), ("GET", "/favicon.svg/extra"),
+                             ("GET", "/app/branding.py"), ("GET", "/.env")):
+            with self.subTest(method=method, path=path):
+                self.assertEqual(self.request(method, path)[0], 404)
 
     @classmethod
     def setUpClass(cls):

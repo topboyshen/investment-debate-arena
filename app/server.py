@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from debate import build_debate, normalize_input
 from portal_pages import HOME_PAGE, REPORTS_PAGE
 from ops_page import OPS_PAGE
+from branding import FAVICON_SVG
 
 MAX_BODY_BYTES = 4096
 SECURITY_HEADERS = {
@@ -28,6 +29,7 @@ PAGE = r'''<!doctype html>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>多角色投研辩论场 · Prototype</title>
+  <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg?v=1" />
   <style>
     :root{--ink:#12233f;--muted:#61708a;--paper:#f6f4ee;--line:#d8dce4;--white:#fffdfa;--navy:#13294b;--gold:#d79e37;--coral:#db6d59;--teal:#2d827b;--violet:#7160b4;--shadow:0 18px 48px rgba(26,49,86,.10)}
     *{box-sizing:border-box} body{margin:0;background:var(--paper);color:var(--ink);font-family:Inter,"PingFang SC","Microsoft YaHei",Arial,sans-serif;line-height:1.55}
@@ -91,6 +93,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
+        if path == "/favicon.svg":
+            self._favicon()
+            return
         if path == "/healthz":
             self._json(HTTPStatus.OK, {"status": "ok", "service": "investment-debate-arena"})
             return
@@ -160,8 +165,21 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError) as exc:
             self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(exc)})
 
+    def _favicon(self, *, head_only: bool = False) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "image/svg+xml")
+        self.send_header("Content-Length", str(len(FAVICON_SVG)))
+        self.send_header("Cache-Control", "public, max-age=3600")
+        self._security_headers()
+        self.end_headers()
+        if not head_only:
+            self.wfile.write(FAVICON_SVG)
+
     def do_HEAD(self) -> None:
         path = urlparse(self.path).path
+        if path == "/favicon.svg":
+            self._favicon(head_only=True)
+            return
         if path == "/ops":
             self.send_response(HTTPStatus.PERMANENT_REDIRECT)
             self.send_header("Location", "/ops/")
