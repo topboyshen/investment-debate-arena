@@ -15,12 +15,19 @@ n**依赖**: 纯 Python 标准库实现,无外部依赖。
 | 专用账户 | `debatearena` |
 | 专用环境 | `/opt/investment-debate-arena/.venv` |
 | 后端监听 | `127.0.0.1:18766` |
-| 公网入口 | nginx `18765`（限流、并发和超时保护） |
+| 公网入口 | Cloudflare HTTPS → nginx `127.0.0.1:18765`（限流、并发和超时保护） |
 | systemd 单元 | `investment-debate-arena.service` |
 | 健康检查 | `GET /healthz` |
 | 就绪检查 | `GET /readyz` |
 
 该原型不读取、不修改 Mini Hermes 的代码、配置、端口或 systemd 单元。
+
+### 访问方式
+
+按所有者要求，Arena 自 2026-09-21 起无需登录，可通过
+<https://arena.jiejiezi.ccwu.cc/> 访问首页及演示/辩论接口。
+同域名下的 `/netdata/` 保留独立 Basic Auth，私有订阅入口不变。
+nginx 与应用仍仅监听回环地址，公网访问经 Cloudflare Tunnel，未新增防火墙放行。
 
 ## 本地验证
 
