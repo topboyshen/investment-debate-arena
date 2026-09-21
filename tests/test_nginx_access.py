@@ -98,7 +98,7 @@ class NginxAccessTests(unittest.TestCase):
         self.assertIn("disable_symlinks on;", data)
         self.assertIn("limit_except GET { deny all; }", data)
         self.assertIn("default_type application/json;", data)
-        self.assertEqual(self.config.count("/var/lib/project-portal"), 1)
+        self.assertEqual(self.config.count("/var/lib/project-portal"), 2)
         self.assertNotRegex(self.config, r"(?:alias|root)\s+/opt/(?:mini-hermes|signal-gate)")
 
     def test_exporter_has_no_network_or_business_writes(self):
@@ -108,6 +108,23 @@ class NginxAccessTests(unittest.TestCase):
         self.assertIn("ReadWritePaths=/var/lib/project-portal", unit)
         self.assertIn("ProtectHome=yes", unit)
         self.assertNotIn("OnFailure", unit)  # this refresh job sends no alerts
+
+    def test_ops_snapshot_is_exact_read_only_and_private_sampler_not_served(self):
+        for header in ("location = /ops/data.json", "location ^~ /ops/"):
+            block = self.location(header)
+            self.assertIn('auth_basic off;', block)
+            self.assertIn('limit_except GET { deny all; }', block)
+            self.assertIn('Cache-Control "no-store, max-age=0" always;', block)
+            self.assertIn('X-Robots-Tag "noindex, noarchive" always;', block)
+        data = self.location('location = /ops/data.json')
+        self.assertIn('alias /var/lib/project-portal/ops.json;', data)
+        self.assertIn('disable_symlinks on;', data)
+        self.assertNotIn('ops-private', self.config)
+        unit = (Path(__file__).resolve().parents[1] / 'systemd/project-portal-ops.service').read_text()
+        for guard in ('ProtectSystem=strict', 'ProtectHome=yes', 'IPAddressDeny=any',
+                      'IPAddressAllow=localhost', 'ReadWritePaths=/var/lib/project-portal'):
+            self.assertIn(guard, unit)
+        self.assertNotIn('OnFailure', unit)
 
 
 if __name__ == "__main__":

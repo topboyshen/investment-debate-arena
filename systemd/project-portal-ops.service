@@ -1,0 +1,38 @@
+[Unit]
+Description=Read-only redacted operational snapshot for the project portal
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=root
+Group=www-data
+ExecStart=/usr/bin/python3 -B /opt/investment-debate-arena/scripts/export_ops.py
+UMask=0027
+StateDirectory=project-portal
+StateDirectoryMode=0750
+TimeoutStartSec=35
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+ReadWritePaths=/var/lib/project-portal
+InaccessiblePaths=-/opt/mini-hermes/.env -/opt/signal-gate/secrets.env -/etc/nginx -/etc/netdata -/opt/mini-hermes/workspace -/opt/signal-gate/inbox -/etc/sing-box -/opt/mtg
+MemoryMax=96M
+TasksMax=16
+LimitNOFILE=64
+

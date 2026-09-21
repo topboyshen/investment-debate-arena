@@ -22,7 +22,7 @@ HOME_PAGE = r'''<!doctype html>
 <article class="card"><div class="card-meta"><span class="icon" aria-hidden="true">⌁</span><span class="tag public">公开监控</span></div><h3>Netdata 监控</h3><p>无需登录查看服务器的资源与运行指标。仅提供监控读取，不开放配置下载或管理操作。</p><a class="card-link" href="/netdata/"><span>进入监控页面</span><span aria-hidden="true">↗</span></a></article>
 <article class="card"><div class="card-meta"><span class="icon" aria-hidden="true">✳</span><span class="tag">Telegram 使用</span></div><h3>mini-hermes + pi</h3><p>对话、研究与助手能力继续在 Telegram 中使用。网页端本期不提供聊天或工具执行入口。</p><div class="card-note">保留现有使用方式</div></article>
 <article class="card"><div class="card-meta"><span class="icon" aria-hidden="true">⇢</span><span class="tag">只读内容</span></div><h3>Signal Gate</h3><p>在日报中心查看已有的汇总与质量提示。信号审批和执行保持原流程，不在这里开放。</p><a class="card-link" href="/reports/?source=signal_gate"><span>阅读 Signal Gate 日报</span><span aria-hidden="true">↗</span></a></article>
-<article class="card"><div class="card-meta"><span class="icon" aria-hidden="true">⌘</span><span class="tag">后台组件</span></div><h3>运维与网络服务</h3><p>dedirock-infra、sing-box 与 mtg 继续在后台工作。这里不展示订阅地址、日志或管理操作。</p><div class="card-note">无需新增网页入口</div></article>
+<article class="card"><div class="card-meta"><span class="icon" aria-hidden="true">⌘</span><span class="tag public">公开只读</span></div><h3>运维与网络服务</h3><p>查看服务运行、主机资源、网络流量与巡检结果。按分钟更新真实快照，不展示订阅地址、原始日志或管理操作。</p><a class="card-link" href="/ops/"><span>查看详细数据与状态</span><span aria-hidden="true">↗</span></a></article>
 </div></section><aside class="boundary"><h2>统一入口，各有边界</h2><p>首页、辩论场与日报中心可公开访问，无需登录即可阅读已留存日报；Netdata 监控也可免登录查看运行指标。订阅、审批、凭据与服务器管理不因入口合并而公开。</p></aside></main><footer class="footer"><span>JIE / PROJECT WORKSPACE</span><span>聚合入口，不合并权限。</span></footer></div></body></html>'''
 
 

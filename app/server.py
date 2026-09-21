@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 from debate import build_debate, normalize_input
 from portal_pages import HOME_PAGE, REPORTS_PAGE
+from ops_page import OPS_PAGE
 
 MAX_BODY_BYTES = 4096
 SECURITY_HEADERS = {
@@ -104,7 +105,7 @@ class Handler(BaseHTTPRequestHandler):
         if path in {"/api/demo", "/arena/api/demo"}:
             self._json(HTTPStatus.OK, build_debate("AAPL", "近期收入、服务业务与现金流表现支持经营韧性，但需要检验竞争与产品周期风险。"))
             return
-        if path in {"/arena", "/reports"}:
+        if path in {"/arena", "/reports", "/ops"}:
             self.send_response(HTTPStatus.PERMANENT_REDIRECT)
             self.send_header("Location", path + "/")
             self.send_header("Content-Length", "0")
@@ -112,10 +113,10 @@ class Handler(BaseHTTPRequestHandler):
             self._security_headers()
             self.end_headers()
             return
-        if path in {"/", "/arena/", "/reports/"}:
+        if path in {"/", "/arena/", "/reports/", "/ops/"}:
             # The report page is a data-free shell. Only nginx can serve the
             # read-only snapshot; this process never opens source reports/DBs.
-            body = {"/": HOME_PAGE, "/arena/": PAGE, "/reports/": REPORTS_PAGE}[path].encode("utf-8")
+            body = {"/": HOME_PAGE, "/arena/": PAGE, "/reports/": REPORTS_PAGE, "/ops/": OPS_PAGE}[path].encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -161,7 +162,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_HEAD(self) -> None:
         path = urlparse(self.path).path
-        if path not in {"/", "/arena/", "/reports/", "/healthz", "/readyz"}:
+        if path == "/ops":
+            self.send_response(HTTPStatus.PERMANENT_REDIRECT)
+            self.send_header("Location", "/ops/")
+        elif path not in {"/", "/arena/", "/reports/", "/ops/", "/healthz", "/readyz"}:
             self.send_response(HTTPStatus.NOT_FOUND)
         else:
             self.send_response(HTTPStatus.OK)
