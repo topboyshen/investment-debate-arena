@@ -103,6 +103,12 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(body, b"")
         self.assert_security_headers(headers)
 
+        status, headers, body = self.request("OPTIONS", "/")
+        self.assertEqual(status, 204)
+        self.assertEqual(body, b"")
+        self.assertIn("POST", headers["Allow"])
+        self.assert_security_headers(headers)
+
     def test_portal_routes_and_legacy_api(self):
         status, _, body = self.request("GET", "/")
         self.assertEqual(status, 200)
@@ -138,13 +144,6 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(status, 308)
             self.assertEqual(headers["Location"], path + "/")
             self.assertEqual(body, b"")
-
-        status, headers, body = self.request("OPTIONS", "/")
-        self.assertEqual(status, 204)
-        self.assertEqual(body, b"")
-        self.assertIn("POST", headers["Allow"])
-        self.assert_security_headers(headers)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -34,4 +34,3 @@ InaccessiblePaths=-/opt/mini-hermes/.env -/opt/signal-gate/secrets.env -/etc/ngi
 MemoryMax=128M
 TasksMax=16
 LimitNOFILE=64
-
