@@ -30,14 +30,55 @@ class NginxAccessTests(unittest.TestCase):
         self.assertIn("limit_conn arena_conn_per_ip 5;", arena)
         self.assertIn("proxy_pass http://127.0.0.1:18766;", arena)
 
-    def test_netdata_stays_protected_and_origin_stays_private(self):
+    def test_netdata_is_public_read_only_and_origin_stays_private(self):
         netdata = self.location("location ~ ^/netdata/(?<ndpath>.*)$")
-        self.assertIn('auth_basic "Netdata Monitoring";', netdata)
-        self.assertIn("auth_basic_user_file /etc/nginx/netdata.htpasswd;", netdata)
-        self.assertNotIn("auth_basic off;", netdata)
+        self.assertIn('auth_basic off;', netdata)
+        self.assertNotIn('auth_basic_user_file', netdata)
+        self.assertIn('if ($netdata_public_blocked) { return 404; }', netdata)
+        self.assertIn('if ($request_method !~ "^(GET|HEAD)$") { return 405; }', netdata)
+        self.assertIn('limit_except GET { deny all; }', netdata)
+        self.assertIn('limit_req zone=netdata_cloud_per_ip burst=100 nodelay;', netdata)
+        self.assertIn('Cache-Control "no-store, max-age=0" always;', netdata)
+        self.assertIn('proxy_set_header Authorization "";', netdata)
         self.assertIn("listen 127.0.0.1:18765 default_server;", self.config)
         self.assertIn("listen [::1]:18765 default_server;", self.config)
         self.assertIn("include /etc/nginx/private-subscriptions.conf;", self.config)
+
+    def test_netdata_api_allowlist_rejects_control_and_encoded_paths(self):
+        start = self.config.index('map $uri $netdata_public_blocked {')
+        rules = []
+        for line in self.config[start:].splitlines()[1:]:
+            if line == '}':
+                break
+            if line.strip().startswith('~'):
+                pattern, value = line.strip().rstrip(';').rsplit(' ', 1)
+                flags = re.I if pattern.startswith('~*') else 0
+                rules.append((re.compile(pattern[2:] if flags else pattern[1:], flags), value))
+
+        self.assertIn('map $args $netdata_registry_blocked {\n    default 1;\n    "action=hello" 0;', self.config)
+
+        def blocked(path, args=''):
+            value = next((value for regex, value in rules if regex.search(path)), '0')
+            return args != 'action=hello' if value == '$netdata_registry_blocked' else value == '1'
+
+        self.assertFalse(blocked('/netdata/api/v1/registry', 'action=hello'))
+        for args in ('', 'action=access', 'action=hello&action=delete', 'action=%68ello'):
+            self.assertTrue(blocked('/netdata/api/v1/registry', args))
+
+        for path in ['/netdata/', '/netdata/v3/index.html', '/netdata/api/v1/info',
+                     '/netdata/api/v1/charts', '/netdata/api/v2/data', '/netdata/api/v3/settings',
+                     '/netdata/host/localhost/api/v1/data', '/netdata/node/local/v3/api/v3/contexts']:
+            with self.subTest(path=path):
+                self.assertFalse(blocked(path))
+        for path in ['/netdata/netdata.conf', '/netdata/v3/netdata.conf',
+                     '/netdata/netdata.conf?x', '/netdata/v3/netdata.conf?x',
+                     '/netdata/api/v1/manage/health', '/netdata/host/localhost/api/v1/manage/health',
+                     '/netdata/v2/api/v3/config', '/netdata/node/local/api/v3/function',
+                     '/netdata/api/v1/registry', '/netdata/api/v3/claim', '/netdata/api/v3/bearer_get_token',
+                     '/netdata/api/v3/rtc_offer', '/netdata/api/v3/future_control', '/netdata/debug',
+                     '/netdata/v3/host/local/exit', '/netdata/mirror', '/netdata/%61pi/v1/manage']:
+            with self.subTest(path=path):
+                self.assertTrue(blocked(path))
 
     def test_reports_are_public_read_only_and_not_cached(self):
         for header in ("location = /reports/data.json", "location ^~ /reports/"):

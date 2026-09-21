@@ -17,7 +17,8 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn("日报中心使用现有 Netdata 账号登录", HOME_PAGE)
         self.assertIn("公开阅读", REPORTS_PAGE)
         self.assertIn("credentials:'omit'", REPORTS_PAGE)
-        self.assertIn("Netdata 监控仍保留原认证", HOME_PAGE)
+        self.assertIn("Netdata 监控也可免登录", HOME_PAGE)
+        self.assertNotIn("独立登录", HOME_PAGE)
 
     @classmethod
     def setUpClass(cls):

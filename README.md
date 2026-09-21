@@ -34,12 +34,16 @@
 | `/api/demo`、`/api/debate` | 兼容原有客户端与检查 | 公开、限流 |
 | `/reports/` | 日报中心 | 按所有者要求公开阅读、无需登录 |
 | `/reports/data.json` | 唯一报告数据入口 | 公开只读、禁止缓存 |
-| `/netdata/` | 原有监控 | 原有 Basic Auth 不变 |
+| `/netdata/` | Netdata 监控 | 按所有者要求公开只读；控制与配置接口不开放 |
 
 任何知道网址的人均可读取当前与历史留存日报；`noindex` 仅建议搜索引擎不收录，不是访问控制。
 
 私有订阅入口不变，不在工作台展示。网页没有 pi 执行、聊天、审批、重发日报、管理服务或读取任意文件的权限。
 nginx 与应用仍仅监听回环地址，公网访问经 Cloudflare Tunnel，未新增防火墙放行。
+
+Netdata 公网监控会公开主机资源、运行指标及仪表盘提供的相关信息。仅在此域名的 `/netdata/` 移除登录要求，保留限流和禁止缓存；配置下载、管理与函数执行入口不开放。原有回环 `19998` SSH 隧道入口与凭据文件不变。
+
+Netdata 自带的云账号登录是可选项。首次看到欢迎页时，选择 `Skip and use the dashboard anonymously` 即可查看图表，不必注册或输入口令。启动所需 registry 查询仅允许原始参数恰为 `action=hello`，不开放登记或修改行为。
 
 ### 日报快照边界
 
@@ -57,6 +61,8 @@ nginx 与应用仍仅监听回环地址，公网访问经 Cloudflare Tunnel，�
 ```bash
 cd /opt/investment-debate-arena
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=app .venv/bin/python -m unittest discover -s tests -v
+# 本地假后端验证 Netdata 公网只读规则，不请求真实管理接口（需 nginx）
+.venv/bin/python -B scripts/check_netdata_policy.py
 curl -fsS http://127.0.0.1:18766/readyz
 curl -fsS http://127.0.0.1:18765/healthz
 ```
@@ -67,7 +73,7 @@ curl -fsS http://127.0.0.1:18765/healthz
 
 发布先运行完整测试、导出器假数据测试、nginx/systemd 配置校验。保持 Git 中的 nginx/unit 模板与安装文件一致，只重启本服务，不重启 mini-hermes、Signal Gate 或其他业务。
 
-日报页面与数据入口必须通过不携带凭据可读、目录穿越不能扩大读取范围、后端直接读取 404 的检查。公网首页与 Arena 保持可用，Netdata 仍要求登录，订阅配置字节不变。部署失败时恢复本次变更前的确切文件/服务状态，禁止重置整个仓库。
+日报页面与数据入口必须通过不携带凭据可读、目录穿越不能扩大读取范围、后端直接读取 404 的检查。公网首页与 Arena 保持可用，Netdata 图表免登录可读、配置和控制接口不可用，订阅配置字节不变。部署失败时恢复本次变更前的确切文件/服务状态，禁止重置整个仓库。
 
 若之后撤回门户，先停用 `project-portal-export.timer`，再按已记录的前版本恢复本项目和 nginx 配置；认证边界不扩大。无需回滚业务数据库，也无需重发任何消息。
 
