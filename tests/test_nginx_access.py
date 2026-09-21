@@ -39,13 +39,14 @@ class NginxAccessTests(unittest.TestCase):
         self.assertIn("listen [::1]:18765 default_server;", self.config)
         self.assertIn("include /etc/nginx/private-subscriptions.conf;", self.config)
 
-    def test_reports_have_no_public_data_alias_or_cache(self):
+    def test_reports_are_public_read_only_and_not_cached(self):
         for header in ("location = /reports/data.json", "location ^~ /reports/"):
             block = self.location(header)
-            self.assertIn('auth_basic "Netdata Monitoring";', block)
-            self.assertIn("auth_basic_user_file /etc/nginx/netdata.htpasswd;", block)
-            self.assertNotIn("auth_basic off", block)
-            self.assertIn('Cache-Control "private, no-store, max-age=0" always;', block)
+            self.assertIn('auth_basic off;', block)
+            self.assertNotIn('auth_basic_user_file', block)
+            self.assertIn('limit_req zone=arena_per_ip burst=10 nodelay;', block)
+            self.assertIn('X-Robots-Tag "noindex, noarchive" always;', block)
+            self.assertIn('Cache-Control "no-store, max-age=0" always;', block)
             self.assertIn('CDN-Cache-Control "no-store" always;', block)
             self.assertIn("Strict-Transport-Security", block)
         data = self.location("location = /reports/data.json")

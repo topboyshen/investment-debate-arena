@@ -1,5 +1,5 @@
 [Unit]
-Description=Refresh the protected report snapshot without generating or sending reports
+Description=Refresh the read-only report snapshot without generating or sending reports
 
 [Timer]
 OnBootSec=2min

@@ -8,9 +8,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 from server import Handler, SECURITY_HEADERS
+from portal_pages import HOME_PAGE, REPORTS_PAGE
 
 
 class ServerTests(unittest.TestCase):
+    def test_report_copy_matches_anonymous_access(self):
+        self.assertNotIn("登录后阅读", HOME_PAGE + REPORTS_PAGE)
+        self.assertNotIn("日报中心使用现有 Netdata 账号登录", HOME_PAGE)
+        self.assertIn("公开阅读", REPORTS_PAGE)
+        self.assertIn("credentials:'omit'", REPORTS_PAGE)
+        self.assertIn("Netdata 监控仍保留原认证", HOME_PAGE)
+
     @classmethod
     def setUpClass(cls):
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -127,7 +135,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
 
     def test_backend_cannot_serve_any_report_data(self):
-        # nginx authenticates the shell; the backend has no data route at all.
+        # nginx serves only the public snapshot; the backend has no data route.
         for path in ("/reports/data.json", "/reports/data.json?x=1", "/reports/../reports.json",
                      "/reports%2fdata.json", "/reports//data.json", "/reports.json", "/api/reports",
                      "/var/lib/project-portal/reports.json", "/.env", "/netdata.htpasswd"):

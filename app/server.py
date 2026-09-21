@@ -114,7 +114,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path in {"/", "/arena/", "/reports/"}:
             # The report page is a data-free shell. Only nginx can serve the
-            # protected snapshot; this process never opens source reports/DBs.
+            # read-only snapshot; this process never opens source reports/DBs.
             body = {"/": HOME_PAGE, "/arena/": PAGE, "/reports/": REPORTS_PAGE}[path].encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")

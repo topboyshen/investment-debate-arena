@@ -1,5 +1,5 @@
 [Unit]
-Description=Read-only existing daily reports for the protected project portal
+Description=Read-only existing daily reports for the project portal
 After=local-fs.target
 
 [Service]
