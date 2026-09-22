@@ -154,6 +154,25 @@ class OpsRendererTests(unittest.TestCase):
         self.assertEqual(result["requests"], [{"url":"/ops/data.json", "cache":"no-store", "credentials":"omit"}])
         self.assertIn(60000, result["intervals"])
 
+    def test_summary_denominator_is_monitored_services_not_entire_host(self):
+        data = self.fixture()
+        data["services"].append({"id": "signal-gate", "label": "Signal Gate · 研究与资讯收件",
+                                 "active_state": "active", "sub_state": "running"})
+        result = self.render(data)
+        self.assertIn("2 / 2 个已监测服务运行中", result["elements"]["summary-copy"]["text"])
+        self.assertIn("并非整机全部服务", result["elements"]["summary-copy"]["text"])
+        self.assertIn("研究与资讯收件", result["elements"]["services"]["text"])
+
+    def test_unknown_signal_gate_prevents_healthy_summary(self):
+        data = self.fixture()
+        data["services"].append({"id": "signal-gate", "label": "Signal Gate · 研究与资讯收件",
+                                 "active_state": "unknown", "sub_state": "unknown"})
+        result = self.render(data)
+        self.assertIn("1 / 2 个已监测服务运行中", result["elements"]["summary-copy"]["text"])
+        self.assertIn("1 项状态未知", result["elements"]["summary-copy"]["text"])
+        self.assertEqual(result["elements"]["summary-title"]["text"], "状态未完整采集")
+        self.assertNotIn("ok", result["elements"]["summary-badge"]["className"].split())
+
     def test_explicit_unlimited_is_not_missing(self):
         data = self.fixture()
         data["services"][0]["memory_limit_unlimited"] = True

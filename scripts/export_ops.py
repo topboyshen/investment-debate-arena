@@ -27,7 +27,8 @@ SERVICES = {
     'cloudflared': 'Cloudflare Tunnel', 'nginx': 'nginx · 网页入口',
     'netdata': 'Netdata · 资源监控', 'fail2ban': 'Fail2ban · 登录防护',
     'ssh': 'SSH · 远程连接', 'mini-hermes': 'mini-hermes',
-    'mini-hermes-pi': 'pi 助手', 'signal-gate-review': 'Signal Gate 人审',
+    'mini-hermes-pi': 'pi 助手', 'signal-gate': 'Signal Gate · 研究与资讯收件',
+    'signal-gate-review': 'Signal Gate 人审',
     'investment-debate-arena': '项目工作台 / Arena',
 }
 PROPERTIES = ('Id', 'LoadState', 'ActiveState', 'SubState', 'MemoryCurrent',

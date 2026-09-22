@@ -77,7 +77,7 @@ OPS_PAGE = r'''<!doctype html>
   const incomplete = !services.length || !checks.length || unknown > 0;
   let label = uncertain ? '历史快照' : inactive || attention ? '需要关注' : incomplete ? '状态未完整采集' : '服务与巡检未见异常';
   el('summary-title').textContent = label;
-  el('summary-copy').textContent = (services.length ? active + ' / ' + services.length + ' 个服务运行中' : '服务状态未采集') + ' · ' + (checks.length ? attention + ' 项巡检需关注' : '巡检结果未采集') + (unknown ? ' · ' + unknown + ' 项状态未知' : '') + '。这里仅汇总服务与巡检；详细指标可能缺测，不代表业务端到端验收。';
+  el('summary-copy').textContent = (services.length ? active + ' / ' + services.length + ' 个已监测服务运行中' : '服务状态未采集') + ' · ' + (checks.length ? attention + ' 项巡检需关注' : '巡检结果未采集') + (unknown ? ' · ' + unknown + ' 项状态未知' : '') + '。分母仅为本页已监测服务，并非整机全部服务；详细指标可能缺测，不代表业务端到端验收。';
   el('summary-badge').textContent = uncertain ? '待刷新' : inactive || attention ? '需关注' : incomplete ? '待采集' : '服务 / 巡检正常';
   el('summary-badge').className = 'badge ' + (uncertain || inactive || attention ? 'warning' : incomplete ? 'unknown' : 'ok');
  }

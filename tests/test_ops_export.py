@@ -108,6 +108,36 @@ class OpsExportTests(unittest.TestCase):
             self.assertIsNone(row[field])
         self.assertNotIn(SECRET, json.dumps(row))
 
+    def test_signal_gate_receiving_core_is_monitored_with_observed_systemd_status(self):
+        self.assertIn("signal-gate", exporter.SERVICES)
+        for active, sub in (("active", "running"), ("failed", "failed"),
+                            ("inactive", "dead")):
+            with self.subTest(active=active):
+                raw = "\n".join(("Id=signal-gate.service", "LoadState=loaded",
+                                  "ActiveState=" + active, "SubState=" + sub,
+                                  "MemoryCurrent=17825792", "TasksCurrent=2",
+                                  "NRestarts=0"))
+                with mock.patch.object(exporter, "command", return_value=raw) as command:
+                    rows = exporter.collect_services(NOW, None)
+                self.assertIn("signal-gate.service", command.call_args.args[0])
+                core = next(row for row in rows if row["id"] == "signal-gate")
+                self.assertEqual(core["active_state"], active)
+                self.assertEqual(core["sub_state"], sub)
+                self.assertEqual(core["memory_bytes"], 17825792)
+                self.assertEqual(core["tasks"], 2)
+                self.assertEqual(core["restarts"], 0)
+
+    def test_unobserved_signal_gate_is_unknown_even_when_review_is_active(self):
+        raw = "Id=signal-gate-review.service\nActiveState=active\nSubState=running"
+        with mock.patch.object(exporter, "command", return_value=raw):
+            rows = exporter.collect_services(NOW, None)
+        core = next(row for row in rows if row["id"] == "signal-gate")
+        review = next(row for row in rows if row["id"] == "signal-gate-review")
+        self.assertEqual(core["active_state"], "unknown")
+        self.assertEqual(core["sub_state"], "unknown")
+        self.assertIsNone(core["memory_bytes"])
+        self.assertEqual(review["active_state"], "active")
+
     def test_rates_use_same_boot_window_and_same_network_interfaces(self):
         before = {"monotonic": 100, "boot_id": "boot-A", "cpu_total": 1000,
                   "cpu_idle": 600, "interfaces": ["eth0"], "rx": 1000, "tx": 2000}

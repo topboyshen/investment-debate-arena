@@ -187,7 +187,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(HTTPStatus.NOT_FOUND)
         else:
             self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Length", "0")
+        page = {"/": HOME_PAGE, "/arena/": PAGE, "/reports/": REPORTS_PAGE, "/ops/": OPS_PAGE}.get(path)
+        if page is not None:
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(page.encode("utf-8"))) if page is not None else "0")
         self.send_header("Cache-Control", "no-store")
         self._security_headers()
         self.end_headers()
