@@ -36,7 +36,7 @@ HOME_PAGE = r'''<!doctype html>
 <script>
 'use strict';
 const REQUIRED_SERVICES=['sing-box','mtg','cloudflared','nginx','netdata','fail2ban','ssh','mini-hermes','mini-hermes-pi','signal-gate','signal-gate-review','investment-debate-arena'];
-const CHECK_AGES={runtime:1500,subscriptions:2700,config_drift:2700,morning:97200};
+const CHECK_AGES={runtime:1500,pi_requests:1500,subscriptions:2700,config_drift:2700,morning:97200};
 function record(value){return value!==null&&typeof value==='object'&&!Array.isArray(value);}
 function stamp(value){if(typeof value!=='string'||value.length>64)return null;const match=/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);if(!match||Number(match[2])>23||Number(match[3])>59||Number(match[4])>59)return null;const day=Date.parse(match[1]+'T00:00:00Z');if(!Number.isFinite(day)||new Date(day).toISOString().slice(0,10)!==match[1])return null;const n=Date.parse(value);return Number.isFinite(n)?n:null;}
 function freshness(value,now,maxAge){const n=stamp(value);return n===null||n>now+60000?'unknown':now-n>maxAge*1000?'stale':'fresh';}

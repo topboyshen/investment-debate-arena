@@ -31,6 +31,26 @@ class OpsExportTests(unittest.TestCase):
     def check(self, data, key="runtime", max_age=1500):
         return exporter.project_check(key, "Fixed label", data, NOW, max_age)
 
+    def test_pi_request_incident_is_not_hidden_by_clear_runtime(self):
+        runtime = self.check({"status": "clear", "updated_at": CHECKED})
+        pi = self.check({"version": 1, "updated_at": CHECKED, "failure_streak": 2,
+                         "last_success_us": 0, "incident": {"id": SECRET, "alert_sent": True}}, key="pi_requests")
+        self.assertEqual(runtime["status"], "ok")
+        self.assertEqual(pi["status"], "error")
+        self.assertNotIn(SECRET, json.dumps(pi))
+        self.assertIn('pi_requests', {row[0] for row in exporter.CHECKS})
+
+    def test_pi_no_traffic_is_unverified_not_healthy(self):
+        data = {"version": 1, "updated_at": CHECKED, "failure_streak": 0,
+                "last_success_us": 0, "incident": None}
+        self.assertEqual(self.check(data, key="pi_requests")["status"], "unknown")
+        data.update(failure_streak=1)
+        self.assertEqual(self.check(data, key="pi_requests")["status"], "warning")
+        data.update(failure_streak=0, last_success_us=1)
+        self.assertEqual(self.check(data, key="pi_requests")["status"], "ok")
+        data['updated_at'] = exporter.iso(NOW - 1501)
+        self.assertEqual(self.check(data, key="pi_requests")["status"], "stale")
+
     def test_check_projection_exports_only_fixed_labels_not_private_details(self):
         self.assertEqual(len(SECRET), 64)
         self.assertRegex(SECRET, r"^[0-9a-f]{64}$")

@@ -24,7 +24,7 @@ SERVICE_IDS = (
     "mini-hermes", "mini-hermes-pi", "signal-gate", "signal-gate-review",
     "investment-debate-arena",
 )
-CHECK_AGES = {"runtime": 1500, "subscriptions": 2700,
+CHECK_AGES = {"runtime": 1500, "pi_requests": 1500, "subscriptions": 2700,
               "config_drift": 2700, "morning": 97200}
 
 NODE_RUNNER = r"""

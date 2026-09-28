@@ -36,6 +36,7 @@ PROPERTIES = ('Id', 'LoadState', 'ActiveState', 'SubState', 'MemoryCurrent',
               'ExecMainStartTimestampMonotonic', 'ControlGroup')
 CHECKS = (
     ('runtime', '业务健康检查', '/var/lib/business-health-monitor/runtime.json', 25 * 60),
+    ('pi_requests', 'pi 请求结果', '/var/lib/business-health-monitor/pi-requests.json', 25 * 60),
     ('subscriptions', '订阅健康检查', '/var/lib/private/subscription-health-monitor/subscriptions.json', 45 * 60),
     ('config_drift', '配置一致性', '/var/lib/config-drift/state.json', 45 * 60),
     ('morning', '海外晨报看门狗', '/var/lib/business-health-monitor/morning.json', 27 * 3600),
@@ -154,6 +155,24 @@ def project_check(key, label, data, now, max_age):
     status = {'clear': 'ok', 'ok': 'ok', 'pending': 'warning', 'alert': 'error',
               'issue': 'error', 'problem': 'error', 'notified': 'error', 'drift': 'error'}.get(state, 'unknown')
     issues = []
+    if key == 'pi_requests':
+        # Runtime process health is not pi request health. Only expose fixed
+        # aggregates, never request hashes, incident IDs or notification bodies.
+        streak, success = data.get('failure_streak'), data.get('last_success_us')
+        incident = data.get('incident')
+        valid = (data.get('version') == 1 and type(streak) is int and 0 <= streak <= 1000000
+                 and type(success) is int and success >= 0
+                 and (incident is None or isinstance(incident, dict)))
+        if not valid or (incident is not None) != (streak >= 2):
+            status = 'unknown'
+        elif incident is not None:
+            status, issues = 'error', ['pi 请求连续失败，尚无后续成功证据']
+        elif streak:
+            status, issues = 'warning', ['pi 最近一次请求失败，尚未达到连续失败阈值']
+        elif success:
+            status = 'ok'
+        else:
+            status, issues = 'unknown', ['尚无已完成的 pi 请求成功证据']
     codes = data.get('pending_codes', {})
     if isinstance(codes, dict) and codes:
         issues = [ISSUE_LABELS.get(code, '检测到一项异常（详见私有告警）') for code in list(codes)[:20]]
@@ -172,7 +191,7 @@ def project_check(key, label, data, now, max_age):
 
 
 def collect_checks(now):
-    cadence = {'runtime': 900, 'subscriptions': 1800, 'config_drift': 1800, 'morning': 86400}
+    cadence = {'runtime': 900, 'pi_requests': 900, 'subscriptions': 1800, 'config_drift': 1800, 'morning': 86400}
     return [{**project_check(key, label, load_json(path), now, age), 'source_interval_seconds': cadence[key]}
             for key, label, path, age in CHECKS]
 
