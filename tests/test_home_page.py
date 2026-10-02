@@ -99,11 +99,15 @@ class HomeSummaryTests(unittest.TestCase):
                              "latest_report_date": "2026-09-22"}]}
 
     def ops_fixture(self):
+        checks = [{"id": key, "status": "ok", "issues": [],
+                   "checked_at": self.NOW.isoformat()} for key in CHECK_AGES]
+        next(row for row in checks if row["id"] == "pi_requests").update(
+            sample_status="recent_success", sample_window_seconds=86400,
+            last_success_at=(self.NOW - timedelta(minutes=1)).isoformat())
         return {"schema_version": 1, "exported_at": self.NOW.isoformat(),
                 "services": [{"id": key, "active_state": "active", "sub_state": "running"}
                              for key in SERVICE_IDS],
-                "checks": [{"id": key, "status": "ok", "issues": [],
-                            "checked_at": self.NOW.isoformat()} for key in CHECK_AGES]}
+                "checks": checks}
 
     def execute(self, **options):
         payload = {"script": SCRIPT, "html": HOME_PAGE, "now": self.NOW.isoformat(), **options}
@@ -214,6 +218,21 @@ class HomeSummaryTests(unittest.TestCase):
             with self.subTest(change=change):
                 self.assertNotEqual(self.summary("summarizeOps", data)["state"], "ok")
 
+    def test_old_pi_snapshot_cannot_claim_current_request_health(self):
+        for change in ({"sample_status": "idle"},
+                       {"last_success_at": (self.NOW - timedelta(hours=25)).isoformat()},
+                       {"sample_window_seconds": None}):
+            data = self.ops_fixture()
+            pi = next(row for row in data["checks"] if row["id"] == "pi_requests")
+            pi.update(change)
+            with self.subTest(change=change):
+                result = self.summary("summarizeOps", data)
+                self.assertEqual(result["state"], "unknown")
+                self.assertEqual(result["unknown"], 1)
+        data = self.ops_fixture()
+        next(row for row in data["checks"] if row["id"] == "pi_requests").pop("last_success_at")
+        self.assertEqual(self.summary("summarizeOps", data)["state"], "unknown")
+
     def test_fresh_export_cannot_refresh_the_underlying_check_timestamp(self):
         for key, max_age in CHECK_AGES.items():
             data = self.ops_fixture()
@@ -265,6 +284,7 @@ class HomeSummaryTests(unittest.TestCase):
             data["exported_at"] = now
             for check in data["checks"]:
                 check["checked_at"] = now
+            next(check for check in data["checks"] if check["id"] == "pi_requests")["last_success_at"] = now
             data["checks"][0]["checked_at"] = invalid
             with self.subTest(check_timestamp=invalid):
                 result = self.summary("summarizeOps", data, now=now)

@@ -44,6 +44,11 @@ OPS_PAGE = r'''<!doctype html>
  const pct = value => num(value) && value <= 100 ? value.toFixed(1) + '%' : missing;
  const statusNames = {ok:'正常',warning:'需关注',error:'异常',unknown:'未采集',stale:'数据过期'};
  const badge = (label, state = 'unknown') => node('span', 'badge ' + (Object.hasOwn(statusNames, state) ? state : 'unknown'), label);
+ const checkLevel = check => {
+  if (check.id!=='pi_requests'||check.status!=='ok') return check.status;
+  const n=Date.parse(check.last_success_at),window=check.sample_window_seconds;
+  return check.sample_status==='recent_success'&&typeof check.last_success_at==='string'&&check.last_success_at.length<=64&&/T.*(?:Z|[+-]\d{2}:\d{2})$/.test(check.last_success_at)&&Number.isInteger(window)&&window>0&&window<=7*86400&&Number.isFinite(n)&&n<=Date.now()+60000&&Date.now()-n<=window*1000 ? 'ok':'unknown';
+ };
  const statuses = {active:'运行中',inactive:'未运行',failed:'运行失败',activating:'启动中',deactivating:'停止中',reloading:'重载中'};
  const serviceLevel = s => s.active_state === 'active' ? 'ok' : s.active_state === 'failed' ? 'error' : Object.hasOwn(statuses, s.active_state) ? 'warning' : 'unknown';
  let snapshot = null, loading = false, fetchError = false;
@@ -72,8 +77,8 @@ OPS_PAGE = r'''<!doctype html>
   const services = data.services, checks = data.checks;
   const active = services.filter(s => s.active_state === 'active').length;
   const inactive = services.filter(s => serviceLevel(s) === 'error' || serviceLevel(s) === 'warning').length;
-  const attention = checks.filter(c => ['warning','error','stale'].includes(c.status)).length;
-  const unknown = services.filter(s => serviceLevel(s) === 'unknown').length + checks.filter(c => !Object.hasOwn(statusNames,c.status) || c.status === 'unknown').length;
+  const attention = checks.filter(c => ['warning','error','stale'].includes(checkLevel(c))).length;
+  const unknown = services.filter(s => serviceLevel(s) === 'unknown').length + checks.filter(c => !Object.hasOwn(statusNames,checkLevel(c)) || checkLevel(c) === 'unknown').length;
   const incomplete = !services.length || !checks.length || unknown > 0;
   let label = uncertain ? '历史快照' : inactive || attention ? '需要关注' : incomplete ? '状态未完整验证' : '服务与巡检未见异常';
   el('summary-title').textContent = label;
@@ -139,9 +144,10 @@ OPS_PAGE = r'''<!doctype html>
   for (const check of list) {
    const card=node('article','panel check'),head=node('div','check-head');
    const pi=check.id==='pi_requests';
+   const level=checkLevel(check);
    const sampleNames={recent_success:'有成功样本',recent_without_success:'有结束样本，但无成功',idle:'无结束样本',unverified:'无可核验样本'};
-   const statusLabel=pi&&check.status==='unknown' ? known({idle:'空闲未验证',recent_without_success:'成功未验证',unverified:'尚无样本'},check.sample_status,'未验证') : known(statusNames,check.status);
-   head.append(node('h3','',text(check.label)||text(check.id)||'巡检'),badge(statusLabel,check.status));
+   const statusLabel=pi&&level==='unknown' ? known({idle:'空闲未验证',recent_without_success:'成功未验证',unverified:'尚无样本'},check.sample_status,'未验证') : known(statusNames,level);
+   head.append(node('h3','',text(check.label)||text(check.id)||'巡检'),badge(statusLabel,level));
    card.append(head,node('div','check-time','采集 '+stamp(check.checked_at)));
    if (num(check.source_interval_seconds)) card.append(node('div','check-time','计划每 '+duration(check.source_interval_seconds)+' 检查一次'));
    if (pi) {
@@ -152,7 +158,7 @@ OPS_PAGE = r'''<!doctype html>
     card.append(node('div','check-time','近期样本（'+window+'）：'+known(sampleNames,check.sample_status,'未验证')));
    }
    if ((check.issues||[]).length) {const ul=node('ul');for (const issue of check.issues) ul.append(node('li','',text(issue,240)));card.append(ul);}
-   else card.append(node('p','detail-text',check.status==='ok'?'本次已采集范围内无问题。':'暂无可用的异常详情。'));
+   else card.append(node('p','detail-text',level==='ok'?'本次已采集范围内无问题。':pi&&level==='unknown'?'近期请求成功证据未验证；不能据此判断通道正常。':'暂无可用的异常详情。'));
    parent.append(card);
   }
 }

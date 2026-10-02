@@ -206,6 +206,16 @@ class OpsRendererTests(unittest.TestCase):
         self.assertEqual(result["elements"]["summary-title"]["text"], "状态未完整验证")
         self.assertNotIn("ok", result["elements"]["summary-badge"]["className"].split())
 
+    def test_old_pi_snapshot_with_green_status_but_no_sample_proof_is_not_green(self):
+        data = self.fixture()
+        data["checks"].append({"id": "pi_requests", "label": "pi 请求结果",
+                               "status": "ok", "issues": [],
+                               "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat()})
+        result = self.render(data)
+        self.assertEqual(result["elements"]["summary-title"]["text"], "状态未完整验证")
+        self.assertIn("近期请求成功证据未验证", result["elements"]["checks"]["text"])
+        self.assertNotIn("ok", result["elements"]["summary-badge"]["className"].split())
+
     def test_stale_snapshot_is_visibly_historical(self):
         data = self.fixture()
         data["exported_at"] = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=4)).isoformat()
