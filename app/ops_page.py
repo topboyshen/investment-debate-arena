@@ -75,10 +75,10 @@ OPS_PAGE = r'''<!doctype html>
   const attention = checks.filter(c => ['warning','error','stale'].includes(c.status)).length;
   const unknown = services.filter(s => serviceLevel(s) === 'unknown').length + checks.filter(c => !Object.hasOwn(statusNames,c.status) || c.status === 'unknown').length;
   const incomplete = !services.length || !checks.length || unknown > 0;
-  let label = uncertain ? '历史快照' : inactive || attention ? '需要关注' : incomplete ? '状态未完整采集' : '服务与巡检未见异常';
+  let label = uncertain ? '历史快照' : inactive || attention ? '需要关注' : incomplete ? '状态未完整验证' : '服务与巡检未见异常';
   el('summary-title').textContent = label;
-  el('summary-copy').textContent = (services.length ? active + ' / ' + services.length + ' 个已监测服务运行中' : '服务状态未采集') + ' · ' + (checks.length ? attention + ' 项巡检需关注' : '巡检结果未采集') + (unknown ? ' · ' + unknown + ' 项状态未知' : '') + '。分母仅为本页已监测服务，并非整机全部服务；详细指标可能缺测，不代表业务端到端验收。';
-  el('summary-badge').textContent = uncertain ? '待刷新' : inactive || attention ? '需关注' : incomplete ? '待采集' : '服务 / 巡检正常';
+  el('summary-copy').textContent = (services.length ? active + ' / ' + services.length + ' 个已监测服务运行中' : '服务状态未采集') + ' · ' + (checks.length ? attention + ' 项巡检需关注' : '巡检结果未采集') + (unknown ? ' · ' + unknown + ' 项状态未验证' : '') + '。分母仅为本页已监测服务，并非整机全部服务；详细指标可能缺测，不代表业务端到端验收。';
+  el('summary-badge').textContent = uncertain ? '待刷新' : inactive || attention ? '需关注' : incomplete ? '待验证' : '服务 / 巡检正常';
   el('summary-badge').className = 'badge ' + (uncertain || inactive || attention ? 'warning' : incomplete ? 'unknown' : 'ok');
  }
  function metric(label, value, detail, fill) {const card=node('article','metric'); card.append(node('div','metric-label',label),node('div','metric-value',value),node('div','metric-detail',detail)); if (num(fill) && fill <= 100) {const meter=node('div','meter'), bar=node('div','meter-fill'); bar.style.width=fill.toFixed(2)+'%'; meter.append(bar); card.append(meter);} return card;}
@@ -136,8 +136,26 @@ OPS_PAGE = r'''<!doctype html>
  function renderChecks(list) {
   const parent=el('checks');parent.replaceChildren();
   if (!list.length) {parent.append(node('div','panel empty','运维巡检未采集，不能据此判断没有异常。'));return;}
-  for (const check of list) {const card=node('article','panel check'),head=node('div','check-head');head.append(node('h3','',text(check.label)||text(check.id)||'巡检'),badge(known(statusNames,check.status),check.status));card.append(head,node('div','check-time','检查 '+stamp(check.checked_at)));if (num(check.source_interval_seconds)) card.append(node('div','check-time','计划每 '+duration(check.source_interval_seconds)+' 检查一次')); if ((check.issues||[]).length) {const ul=node('ul');for (const issue of check.issues) ul.append(node('li','',text(issue,240)));card.append(ul);}else card.append(node('p','detail-text',check.status==='ok'?'本次已采集范围内无问题。':'暂无可用的异常详情。'));parent.append(card);}
- }
+  for (const check of list) {
+   const card=node('article','panel check'),head=node('div','check-head');
+   const pi=check.id==='pi_requests';
+   const sampleNames={recent_success:'有成功样本',recent_without_success:'有结束样本，但无成功',idle:'无结束样本',unverified:'无可核验样本'};
+   const statusLabel=pi&&check.status==='unknown' ? known({idle:'空闲未验证',recent_without_success:'成功未验证',unverified:'尚无样本'},check.sample_status,'未验证') : known(statusNames,check.status);
+   head.append(node('h3','',text(check.label)||text(check.id)||'巡检'),badge(statusLabel,check.status));
+   card.append(head,node('div','check-time','采集 '+stamp(check.checked_at)));
+   if (num(check.source_interval_seconds)) card.append(node('div','check-time','计划每 '+duration(check.source_interval_seconds)+' 检查一次'));
+   if (pi) {
+    const seconds=check.sample_window_seconds;
+    const window=Number.isInteger(seconds)&&seconds>0&&seconds<=7*86400 ? (seconds%3600===0?seconds/3600+' 小时':duration(seconds)) : '窗口未提供';
+    card.append(node('div','check-time','最近成功 '+(check.last_success_at?stamp(check.last_success_at):'尚无记录')));
+    card.append(node('div','check-time','最近结束 '+(check.last_result_at?stamp(check.last_result_at):'尚无记录')));
+    card.append(node('div','check-time','近期样本（'+window+'）：'+known(sampleNames,check.sample_status,'未验证')));
+   }
+   if ((check.issues||[]).length) {const ul=node('ul');for (const issue of check.issues) ul.append(node('li','',text(issue,240)));card.append(ul);}
+   else card.append(node('p','detail-text',check.status==='ok'?'本次已采集范围内无问题。':'暂无可用的异常详情。'));
+   parent.append(card);
+  }
+}
  async function load() {
   if (loading) return;loading=true;el('refresh').disabled=true;
   const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),12000);

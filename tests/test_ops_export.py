@@ -17,6 +17,8 @@ SPEC.loader.exec_module(exporter)
 
 NOW = 1800516600
 CHECKED = exporter.iso(NOW - 10)
+RECENT_REQUEST_US = (NOW - 60) * 1_000_000
+OLD_REQUEST_US = (NOW - 25 * 3600) * 1_000_000
 # Public, deterministic test material, never an operational credential. Keep a
 # full-length sensitive-looking value so redaction cannot pass on a short stub.
 SECRET = hashlib.sha256(b"ops export offline sensitive fixture v1").hexdigest()
@@ -34,22 +36,64 @@ class OpsExportTests(unittest.TestCase):
     def test_pi_request_incident_is_not_hidden_by_clear_runtime(self):
         runtime = self.check({"status": "clear", "updated_at": CHECKED})
         pi = self.check({"version": 1, "updated_at": CHECKED, "failure_streak": 2,
-                         "last_success_us": 0, "incident": {"id": SECRET, "alert_sent": True}}, key="pi_requests")
+                         "last_success_us": 0, "watermark_us": OLD_REQUEST_US,
+                         "incident": {"id": SECRET, "alert_sent": True}}, key="pi_requests")
         self.assertEqual(runtime["status"], "ok")
         self.assertEqual(pi["status"], "error")
+        self.assertEqual(pi["sample_status"], "idle")
         self.assertNotIn(SECRET, json.dumps(pi))
         self.assertIn('pi_requests', {row[0] for row in exporter.CHECKS})
 
     def test_pi_no_traffic_is_unverified_not_healthy(self):
         data = {"version": 1, "updated_at": CHECKED, "failure_streak": 0,
-                "last_success_us": 0, "incident": None}
+                "last_success_us": 0, "watermark_us": 0, "incident": None}
         self.assertEqual(self.check(data, key="pi_requests")["status"], "unknown")
+        self.assertEqual(self.check(data, key="pi_requests")["sample_status"], "unverified")
         data.update(failure_streak=1)
         self.assertEqual(self.check(data, key="pi_requests")["status"], "warning")
-        data.update(failure_streak=0, last_success_us=1)
+        data.update(failure_streak=0, last_success_us=RECENT_REQUEST_US,
+                    watermark_us=RECENT_REQUEST_US)
         self.assertEqual(self.check(data, key="pi_requests")["status"], "ok")
         data['updated_at'] = exporter.iso(NOW - 1501)
         self.assertEqual(self.check(data, key="pi_requests")["status"], "stale")
+
+    def test_pi_sample_window_is_independent_of_collector_freshness(self):
+        data = {"version": 1, "updated_at": CHECKED, "failure_streak": 0,
+                "last_success_us": OLD_REQUEST_US, "watermark_us": OLD_REQUEST_US,
+                "incident": None, "seen_requests": {SECRET: OLD_REQUEST_US},
+                "notification_history": [{"id": SECRET}], "token": SECRET}
+        result = self.check(data, key="pi_requests")
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(result["sample_status"], "idle")
+        self.assertEqual(result["sample_window_seconds"], 24 * 3600)
+        self.assertEqual(result["checked_at"], CHECKED)
+        self.assertEqual(result["last_success_at"], exporter.iso(OLD_REQUEST_US / 1_000_000))
+        self.assertEqual(result["last_result_at"], result["last_success_at"])
+        self.assertIn('近 24 小时无已完成请求样本', result["issues"][0])
+        self.assertNotIn(SECRET, json.dumps(result))
+        data["watermark_us"] = RECENT_REQUEST_US  # e.g. cancellation; no new success
+        result = self.check(data, key="pi_requests")
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(result["sample_status"], "recent_without_success")
+        self.assertEqual(result["last_success_at"], exporter.iso(OLD_REQUEST_US / 1_000_000))
+        self.assertEqual(result["last_result_at"], exporter.iso(RECENT_REQUEST_US / 1_000_000))
+        data["last_success_us"] = RECENT_REQUEST_US
+        self.assertEqual(self.check(data, key="pi_requests")["sample_status"], "recent_success")
+        self.assertEqual(self.check(data, key="pi_requests")["status"], "ok")
+
+    def test_pi_old_unresolved_failure_is_not_erased_by_idle_window(self):
+        data = {"version": 1, "updated_at": CHECKED, "failure_streak": 2,
+                "last_success_us": 0, "watermark_us": OLD_REQUEST_US,
+                "incident": {"id": SECRET, "alert_sent": True}}
+        result = self.check(data, key="pi_requests")
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["sample_status"], "idle")
+        data.update(failure_streak=1, incident=None)
+        self.assertEqual(self.check(data, key="pi_requests")["status"], "warning")
+        data.update(failure_streak=0, watermark_us=(NOW + 120) * 1_000_000)
+        invalid = self.check(data, key="pi_requests")
+        self.assertEqual(invalid["status"], "unknown")
+        self.assertIsNone(invalid["last_result_at"])
 
     def test_check_projection_exports_only_fixed_labels_not_private_details(self):
         self.assertEqual(len(SECRET), 64)

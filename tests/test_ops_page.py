@@ -169,8 +169,8 @@ class OpsRendererTests(unittest.TestCase):
                                  "active_state": "unknown", "sub_state": "unknown"})
         result = self.render(data)
         self.assertIn("1 / 2 个已监测服务运行中", result["elements"]["summary-copy"]["text"])
-        self.assertIn("1 项状态未知", result["elements"]["summary-copy"]["text"])
-        self.assertEqual(result["elements"]["summary-title"]["text"], "状态未完整采集")
+        self.assertIn("1 项状态未验证", result["elements"]["summary-copy"]["text"])
+        self.assertEqual(result["elements"]["summary-title"]["text"], "状态未完整验证")
         self.assertNotIn("ok", result["elements"]["summary-badge"]["className"].split())
 
     def test_explicit_unlimited_is_not_missing(self):
@@ -183,9 +183,28 @@ class OpsRendererTests(unittest.TestCase):
         data["services"] = []
         data["checks"] = []
         result = self.render(data)
-        self.assertEqual(result["elements"]["summary-title"]["text"], "状态未完整采集")
+        self.assertEqual(result["elements"]["summary-title"]["text"], "状态未完整验证")
         self.assertIn("未采集", result["elements"]["services"]["text"])
         self.assertIn("未采集", result["elements"]["checks"]["text"])
+
+    def test_pi_idle_shows_real_evidence_time_not_collector_success(self):
+        data = self.fixture()
+        data["checks"].append({
+            "id": "pi_requests", "label": "pi 请求结果", "status": "unknown",
+            "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "last_success_at": "2026-09-15T09:15:58+00:00",
+            "last_result_at": "2026-09-15T09:15:58+00:00",
+            "sample_status": "idle", "sample_window_seconds": 86400,
+            "issues": ["近 24 小时无已完成请求样本；当前可用性未验证"],
+        })
+        result = self.render(data)
+        checks = result["elements"]["checks"]["text"]
+        self.assertIn("空闲未验证", checks)
+        self.assertIn("最近成功", checks)
+        self.assertNotIn("最近成功 未采集", checks)
+        self.assertIn("近期样本（24 小时）：无结束样本", checks)
+        self.assertEqual(result["elements"]["summary-title"]["text"], "状态未完整验证")
+        self.assertNotIn("ok", result["elements"]["summary-badge"]["className"].split())
 
     def test_stale_snapshot_is_visibly_historical(self):
         data = self.fixture()

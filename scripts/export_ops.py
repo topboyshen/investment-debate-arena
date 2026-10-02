@@ -41,6 +41,9 @@ CHECKS = (
     ('config_drift', '配置一致性', '/var/lib/config-drift/state.json', 45 * 60),
     ('morning', '海外晨报看门狗', '/var/lib/business-health-monitor/morning.json', 27 * 3600),
 )
+# The pi collector queries the preceding 24 hours of completed requests. Its
+# own updated_at is a collection timestamp, not a fresh business success.
+PI_SAMPLE_WINDOW_SECONDS = 24 * 3600
 ISSUE_LABELS = {
     'arena_business_failures': '辩论场连续出现服务端错误',
     'arena_business_error_rate': '辩论场业务错误率偏高',
@@ -155,24 +158,42 @@ def project_check(key, label, data, now, max_age):
     status = {'clear': 'ok', 'ok': 'ok', 'pending': 'warning', 'alert': 'error',
               'issue': 'error', 'problem': 'error', 'notified': 'error', 'drift': 'error'}.get(state, 'unknown')
     issues = []
+    pi_evidence = None
     if key == 'pi_requests':
         # Runtime process health is not pi request health. Only expose fixed
-        # aggregates, never request hashes, incident IDs or notification bodies.
+        # timestamps, never request hashes, incident IDs or notification bodies.
         streak, success = data.get('failure_streak'), data.get('last_success_us')
+        last_result = data.get('watermark_us')
         incident = data.get('incident')
+        latest_allowed_us = int((now + 60) * 1_000_000)
         valid = (data.get('version') == 1 and type(streak) is int and 0 <= streak <= 1000000
-                 and type(success) is int and success >= 0
+                 and type(success) is int and 0 <= success <= latest_allowed_us
+                 and type(last_result) is int and success <= last_result <= latest_allowed_us
                  and (incident is None or isinstance(incident, dict)))
+        last_success_at = iso(success / 1_000_000) if valid and success else None
+        last_result_at = iso(last_result / 1_000_000) if valid and last_result else None
+        recent_success = bool(valid and success and now - success / 1_000_000 <= PI_SAMPLE_WINDOW_SECONDS)
+        recent_result = bool(valid and last_result and now - last_result / 1_000_000 <= PI_SAMPLE_WINDOW_SECONDS)
+        sample_status = ('unverified' if not valid or not last_result else
+                         'recent_success' if recent_success else
+                         'recent_without_success' if recent_result else 'idle')
+        pi_evidence = {'last_success_at': last_success_at, 'last_result_at': last_result_at,
+                       'sample_status': sample_status,
+                       'sample_window_seconds': PI_SAMPLE_WINDOW_SECONDS}
         if not valid or (incident is not None) != (streak >= 2):
-            status = 'unknown'
+            status, issues = 'unknown', ['pi 请求状态记录不可核验']
         elif incident is not None:
             status, issues = 'error', ['pi 请求连续失败，尚无后续成功证据']
         elif streak:
             status, issues = 'warning', ['pi 最近一次请求失败，尚未达到连续失败阈值']
-        elif success:
+        elif recent_success:
             status = 'ok'
+        elif recent_result:
+            status, issues = 'unknown', [f'近 {PI_SAMPLE_WINDOW_SECONDS // 3600} 小时有结束请求，但无成功证据；当前可用性未验证']
+        elif last_result:
+            status, issues = 'unknown', [f'近 {PI_SAMPLE_WINDOW_SECONDS // 3600} 小时无已完成请求样本；当前可用性未验证']
         else:
-            status, issues = 'unknown', ['尚无已完成的 pi 请求成功证据']
+            status, issues = 'unknown', ['尚无已完成的 pi 请求证据']
     codes = data.get('pending_codes', {})
     if isinstance(codes, dict) and codes:
         issues = [ISSUE_LABELS.get(code, '检测到一项异常（详见私有告警）') for code in list(codes)[:20]]
@@ -186,8 +207,11 @@ def project_check(key, label, data, now, max_age):
         status = 'unknown'
     elif now - checked > max_age:
         status = 'stale'
-    return {'id': key, 'label': label, 'status': status,
-            'checked_at': iso(checked) if checked is not None else None, 'issues': issues}
+    result = {'id': key, 'label': label, 'status': status,
+              'checked_at': iso(checked) if checked is not None else None, 'issues': issues}
+    if pi_evidence is not None:
+        result.update(pi_evidence)
+    return result
 
 
 def collect_checks(now):
