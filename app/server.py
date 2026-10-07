@@ -6,6 +6,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 from debate import build_debate, normalize_input
+from portal_pages import HOME_PAGE, REPORTS_PAGE
+from ops_page import OPS_PAGE
+from branding import FAVICON_SVG
 
 MAX_BODY_BYTES = 4096
 SECURITY_HEADERS = {
@@ -26,6 +29,7 @@ PAGE = r'''<!doctype html>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>多角色投研辩论场 · Prototype</title>
+  <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg?v=1" />
   <style>
     :root{--ink:#12233f;--muted:#61708a;--paper:#f6f4ee;--line:#d8dce4;--white:#fffdfa;--navy:#13294b;--gold:#d79e37;--coral:#db6d59;--teal:#2d827b;--violet:#7160b4;--shadow:0 18px 48px rgba(26,49,86,.10)}
     *{box-sizing:border-box} body{margin:0;background:var(--paper);color:var(--ink);font-family:Inter,"PingFang SC","Microsoft YaHei",Arial,sans-serif;line-height:1.55}
@@ -34,7 +38,7 @@ PAGE = r'''<!doctype html>
   </style>
 </head>
 <body>
-  <header class="top"><div><div class="eyebrow">Investment Research Debate Arena</div><h1>多角色投研辩论场</h1><p>把研究观点拆分为可审计的事实、推断与情景，再由多角色反证与主审归纳。</p></div><div class="mode">原型 · 演示资料库</div></header>
+  <header class="top"><div><a href="/" style="color:#d7e4f3;text-decoration:none;font-size:14px">← 返回项目工作台</a><div class="eyebrow" style="margin-top:14px">Investment Research Debate Arena</div><h1>多角色投研辩论场</h1><p>把研究观点拆分为可审计的事实、推断与情景，再由多角色反证与主审归纳。</p></div><div class="mode">原型 · 演示资料库</div></header>
   <main>
     <div class="notice"><strong>研究边界：</strong> 本工具用于研究过程结构化。它不生成确定性交易指令；请自行核验来源、时点、口径与适用性。</div>
     <div class="grid">
@@ -56,7 +60,7 @@ function render(data){
   const coverage=data.coverage_notice?`<div class="notice"><strong>覆盖说明：</strong>${esc(data.coverage_notice)}</div>`:'';
   content.innerHTML=`<section class="panel hero-card"><div class="ticker">${esc(data.ticker)} · ${esc(data.coverage_status)}</div><div class="thesis">“${esc(data.user_thesis)}”</div><div class="meta">生成时间：${esc(data.generated_at)} · ${esc(data.research_notice)}</div></section>${coverage}<h2 class="section-title">角色论证</h2><div class="role-grid" style="margin-top:14px">${roles}</div><section class="panel chief"><h2>主审结论</h2><div class="review-grid">${list('共识',review.consensus)}${list('分歧',review.disagreements)}${list('关键证据',review.key_evidence)}${list('待验证问题',review.questions)}${list('逻辑失效条件',review.failure_conditions,'wide')}</div></section><section class="panel sources"><h2>来源与时间戳</h2>${sources||'<div class="source">尚无可核验的发行人资料。</div>'}</section>`;
 }
-async function load(){run.disabled=true;run.textContent='构建论证中…';try{const res=await fetch('/api/debate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticker:document.getElementById('ticker').value,thesis:document.getElementById('thesis').value})});const data=await res.json();if(!res.ok)throw new Error(data.error||'请求失败');render(data)}catch(e){content.innerHTML=`<div class="panel empty">无法生成辩论：${esc(e.message)}</div>`}finally{run.disabled=false;run.textContent='生成研究辩论'}}
+async function load(){run.disabled=true;run.textContent='构建论证中…';try{const res=await fetch('/arena/api/debate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticker:document.getElementById('ticker').value,thesis:document.getElementById('thesis').value})});const data=await res.json();if(!res.ok)throw new Error(data.error||'请求失败');render(data)}catch(e){content.innerHTML=`<div class="panel empty">无法生成辩论：${esc(e.message)}</div>`}finally{run.disabled=false;run.textContent='生成研究辩论'}}
 run.addEventListener('click',load);load();
 </script>
 </body></html>'''
@@ -89,6 +93,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
+        if path == "/favicon.svg":
+            self._favicon()
+            return
         if path == "/healthz":
             self._json(HTTPStatus.OK, {"status": "ok", "service": "investment-debate-arena"})
             return
@@ -100,11 +107,21 @@ class Handler(BaseHTTPRequestHandler):
                 {"status": "ready" if ready else "not_ready", "service": "investment-debate-arena"},
             )
             return
-        if path == "/api/demo":
+        if path in {"/api/demo", "/arena/api/demo"}:
             self._json(HTTPStatus.OK, build_debate("AAPL", "近期收入、服务业务与现金流表现支持经营韧性，但需要检验竞争与产品周期风险。"))
             return
-        if path == "/":
-            body = PAGE.encode("utf-8")
+        if path in {"/arena", "/reports", "/ops"}:
+            self.send_response(HTTPStatus.PERMANENT_REDIRECT)
+            self.send_header("Location", path + "/")
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self._security_headers()
+            self.end_headers()
+            return
+        if path in {"/", "/arena/", "/reports/", "/ops/"}:
+            # The report page is a data-free shell. Only nginx can serve the
+            # read-only snapshot; this process never opens source reports/DBs.
+            body = {"/": HOME_PAGE, "/arena/": PAGE, "/reports/": REPORTS_PAGE, "/ops/": OPS_PAGE}[path].encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -116,7 +133,7 @@ class Handler(BaseHTTPRequestHandler):
         self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_POST(self) -> None:
-        if urlparse(self.path).path != "/api/debate":
+        if urlparse(self.path).path not in {"/api/debate", "/arena/api/debate"}:
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
         try:
@@ -148,13 +165,32 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError) as exc:
             self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(exc)})
 
+    def _favicon(self, *, head_only: bool = False) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "image/svg+xml")
+        self.send_header("Content-Length", str(len(FAVICON_SVG)))
+        self.send_header("Cache-Control", "public, max-age=3600")
+        self._security_headers()
+        self.end_headers()
+        if not head_only:
+            self.wfile.write(FAVICON_SVG)
+
     def do_HEAD(self) -> None:
         path = urlparse(self.path).path
-        if path not in {"/", "/healthz", "/readyz"}:
+        if path == "/favicon.svg":
+            self._favicon(head_only=True)
+            return
+        if path == "/ops":
+            self.send_response(HTTPStatus.PERMANENT_REDIRECT)
+            self.send_header("Location", "/ops/")
+        elif path not in {"/", "/arena/", "/reports/", "/ops/", "/healthz", "/readyz"}:
             self.send_response(HTTPStatus.NOT_FOUND)
         else:
             self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Length", "0")
+        page = {"/": HOME_PAGE, "/arena/": PAGE, "/reports/": REPORTS_PAGE, "/ops/": OPS_PAGE}.get(path)
+        if page is not None:
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(page.encode("utf-8"))) if page is not None else "0")
         self.send_header("Cache-Control", "no-store")
         self._security_headers()
         self.end_headers()

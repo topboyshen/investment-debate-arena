@@ -3,14 +3,74 @@ import json
 import sys
 import threading
 import unittest
+from html.parser import HTMLParser
+import xml.etree.ElementTree as ET
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 from server import Handler, SECURITY_HEADERS
+from portal_pages import HOME_PAGE, REPORTS_PAGE
+from branding import FAVICON_SVG
 
 
 class ServerTests(unittest.TestCase):
+    def test_report_copy_matches_anonymous_access(self):
+        self.assertNotIn("登录后阅读", HOME_PAGE + REPORTS_PAGE)
+        self.assertNotIn("日报中心使用现有 Netdata 账号登录", HOME_PAGE)
+        self.assertIn("公开阅读", REPORTS_PAGE)
+        self.assertIn("credentials:'omit'", REPORTS_PAGE)
+        self.assertIn("Netdata 监控也可免登录", HOME_PAGE)
+        self.assertNotIn("独立登录", HOME_PAGE)
+
+    def test_all_portal_pages_reference_the_same_favicon(self):
+        class Icons(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.icons = []
+
+            def handle_starttag(self, tag, attrs):
+                attributes = dict(attrs)
+                if tag == "link" and "icon" in attributes.get("rel", "").split():
+                    self.icons.append(attributes)
+
+        for path in ("/", "/reports/", "/ops/", "/arena/"):
+            with self.subTest(path=path):
+                status, _, body = self.request("GET", path)
+                self.assertEqual(status, 200)
+                parser = Icons()
+                parser.feed(body.decode().split("</head>", 1)[0])
+                self.assertEqual(len(parser.icons), 1)
+                self.assertEqual(parser.icons[0]["href"], "/favicon.svg?v=1")
+                self.assertEqual(parser.icons[0]["type"], "image/svg+xml")
+
+    def test_favicon_is_static_svg_with_correct_get_and_head_headers(self):
+        for path in ("/favicon.svg", "/favicon.svg?v=1"):
+            with self.subTest(path=path):
+                status, headers, body = self.request("GET", path)
+                self.assertEqual(status, 200)
+                self.assertEqual(body, FAVICON_SVG)
+                self.assertEqual(headers["Content-Type"], "image/svg+xml")
+                self.assertEqual(int(headers["Content-Length"]), len(body))
+                self.assertEqual(headers["Cache-Control"], "public, max-age=3600")
+                self.assert_security_headers(headers)
+                head_status, head_headers, head_body = self.request("HEAD", path)
+                self.assertEqual(head_status, 200)
+                self.assertEqual(head_body, b"")
+                for key in ("Content-Type", "Content-Length", "Cache-Control"):
+                    self.assertEqual(head_headers[key], headers[key])
+        svg = ET.fromstring(FAVICON_SVG)
+        self.assertEqual(svg.attrib["viewBox"], "0 0 64 64")
+        for element in svg.iter():
+            self.assertIn(element.tag, {"{http://www.w3.org/2000/svg}" + tag for tag in ("svg", "rect", "path")})
+            self.assertFalse(any("href" in attr or attr.startswith("on") for attr in element.attrib))
+
+    def test_favicon_does_not_open_an_asset_directory_or_write_route(self):
+        for method, path in (("POST", "/favicon.svg"), ("GET", "/favicon.svg/extra"),
+                             ("GET", "/app/branding.py"), ("GET", "/.env")):
+            with self.subTest(method=method, path=path):
+                self.assertEqual(self.request(method, path)[0], 404)
+
     @classmethod
     def setUpClass(cls):
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -109,6 +169,41 @@ class ServerTests(unittest.TestCase):
         self.assertIn("POST", headers["Allow"])
         self.assert_security_headers(headers)
 
+    def test_portal_routes_and_legacy_api(self):
+        status, _, body = self.request("GET", "/")
+        self.assertEqual(status, 200)
+        self.assertIn("项目工作台", body.decode())
+        self.assertIn('href="/reports/"', body.decode())
+        self.assertNotIn("jd:stale", body.decode())
+        status, _, body = self.request("GET", "/arena/")
+        self.assertEqual(status, 200)
+        self.assertIn("/arena/api/debate", body.decode())
+        for path in ("/api/demo", "/arena/api/demo"):
+            status, _, body = self.request("GET", path)
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)["ticker"], "AAPL")
+        body = json.dumps({"ticker": "AAPL", "thesis": "验证迁移后的演示接口。"})
+        status, _, _ = self.request("POST", "/arena/api/debate", body.encode(), {"Content-Type": "application/json"})
+        self.assertEqual(status, 200)
+
+    def test_backend_cannot_serve_any_report_data(self):
+        # nginx serves only the public snapshot; the backend has no data route.
+        for path in ("/reports/data.json", "/reports/data.json?x=1", "/reports/../reports.json",
+                     "/reports%2fdata.json", "/reports//data.json", "/reports.json", "/api/reports",
+                     "/var/lib/project-portal/reports.json", "/.env", "/netdata.htpasswd"):
+            with self.subTest(path=path):
+                status, _, _ = self.request("GET", path)
+                self.assertEqual(status, 404)
+        status, _, body = self.request("GET", "/reports/")
+        self.assertEqual(status, 200)
+        self.assertNotIn("jd:stale\",\"nng8:invalid", body.decode())
+
+    def test_canonical_page_redirects(self):
+        for path in ("/arena", "/reports"):
+            status, headers, body = self.request("GET", path)
+            self.assertEqual(status, 308)
+            self.assertEqual(headers["Location"], path + "/")
+            self.assertEqual(body, b"")
 
 if __name__ == "__main__":
     unittest.main()

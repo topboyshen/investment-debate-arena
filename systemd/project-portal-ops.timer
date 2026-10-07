@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh public read-only operational status about once a minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=60s
+AccuracySec=5s
+Unit=project-portal-ops.service
+
+[Install]
+WantedBy=timers.target

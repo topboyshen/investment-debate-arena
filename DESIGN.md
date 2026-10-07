@@ -35,7 +35,7 @@
 
 ## 系统结构与隔离
 
-原型使用 Python 标准库实现线程型 Web 后端和静态网页界面。后端只监听 `127.0.0.1:18766`，nginx 在本机链路的 `18765` 提供密码门、请求体、限流、并发与超时保护；Cloudflare Tunnel 将可信 HTTPS 主机名 `arena.jiejiezi.ccwu.cc` 路由到该 nginx 入口，UFW 不再公开 `18765/tcp`。服务使用独立目录、虚拟环境和 systemd 单元；源码及虚拟环境由 root 持有，运行账户只读。它不读取、引用或修改 Mini Hermes 的代码、配置、端口或 systemd 单元。
+原型使用 Python 标准库实现线程型 Web 后端和静态网页界面。后端只监听 `127.0.0.1:18766`，nginx 只监听回环地址的 `18765`，提供请求体、限流、并发与超时保护；Cloudflare Tunnel 将可信 HTTPS 主机名 `arena.jiejiezi.ccwu.cc` 路由到该 nginx 入口，防火墙不公开 `18765/tcp`。首页、日报、Arena 和 Netdata 按所有者要求公开访问，报告与运维快照只读，配置与管理接口继续拒绝。服务使用独立目录、虚拟环境和 systemd 单元；源码及虚拟环境由 root 持有，运行账户只读。Arena 应用进程不读取、引用或修改 Mini Hermes 的代码、配置、端口或 systemd 单元；独立快照导出器的读取范围见 README。
 
 ## 验证策略
 

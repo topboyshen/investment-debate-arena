@@ -1,20 +1,39 @@
-__pycache__/
-*.py[cod]
-*.log
-.pytest_cache/
-.coverage
-htmlcov/
-.venv/
-venv/
+# Secrets and machine-local configuration
 .env
 .env.*
 !.env.example
-backups/
-releases/
-*.bak
-*.tar.gz
+*.pem
+*.key
 
-# Cloudflare Tunnel credentials and local account certificates
+# Runtime state
+data/
+*.db
+*.db-*
+*.sqlite*
+*.sock
+*.log
+*.log.*
+
+# Local environments and generated files
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Historical one-off copies
+backups/
+*.bak
+*.bak.*
+*.bak-*
+
+# GitHub deployment safeguards retained during source reconciliation
+releases/
+*.tar.gz
 .cloudflared/
 cloudflare/credentials/
 cloudflared-token*
