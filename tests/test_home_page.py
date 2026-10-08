@@ -109,6 +109,24 @@ class HomeSummaryTests(unittest.TestCase):
                              for key in SERVICE_IDS],
                 "checks": checks}
 
+    def probe_fixture(self, scope, status="pass"):
+        value = {"scope": scope, "status": status,
+                 "checked_at": self.NOW.isoformat(),
+                 "expires_at": (self.NOW + timedelta(minutes=30)).isoformat()}
+        if scope == "vix_source":
+            value.update(code="vix_source_valid" if status == "pass" else "vix_source_quality_failed",
+                         source_as_of=(self.NOW - timedelta(hours=12)).isoformat())
+        else:
+            value.update(model="xai/grok-4.6", code="pi_probe_valid" if status == "pass" else "auth_required")
+        return value
+
+    def idle_pi_fixture(self):
+        data = self.ops_fixture()
+        next(row for row in data["checks"] if row["id"] == "pi_requests").update(
+            status="unknown", sample_status="idle",
+            issues=["近 24 小时无已完成请求样本；当前可用性未验证"])
+        return data
+
     def execute(self, **options):
         payload = {"script": SCRIPT, "html": HOME_PAGE, "now": self.NOW.isoformat(), **options}
         result = subprocess.run([self.node, "-e", NODE_RUNNER], input=json.dumps(payload),
@@ -212,6 +230,84 @@ class HomeSummaryTests(unittest.TestCase):
         self.assertIn("15:30", result["elements"]["ops-meta"]["text"])
         self.assertIn("08:45", result["elements"]["ops-reasons"]["text"])
         self.assertEqual(result["elements"]["ops-status"]["className"], "status ok")
+
+    def test_vix_source_probe_does_not_clear_historical_report_issue(self):
+        data = self.ops_fixture()
+        morning = next(row for row in data["checks"] if row["id"] == "morning")
+        morning.update(status="error", issues=["历史晨报缺 VIX"],
+                       source_validation=self.probe_fixture("vix_source"))
+        summary = self.summary("summarizeOps", data)
+        result = self.execute(mode="browser", reports=self.reports_fixture(), ops=data)["elements"]
+        self.assertEqual(summary["checkIssues"], 1)
+        self.assertEqual(summary["checkState"], "warning")
+        self.assertIn("历史晨报缺 VIX", result["ops-reasons"]["text"])
+        self.assertIn("当次晨报质量记录", result["ops-reasons"]["text"])
+        self.assertIn("VIX 来源复测通过；不能证明整份已发报告完整", result["ops-source-validation"]["text"])
+        self.assertIn("复测 09/22 15:30（北京）", result["ops-source-validation"]["text"])
+        self.assertEqual(result["ops-source-validation"]["className"], "status ok")
+
+    def test_controlled_pi_pass_does_not_invent_real_business_sample(self):
+        data = self.idle_pi_fixture()
+        pi = next(row for row in data["checks"] if row["id"] == "pi_requests")
+        pi["controlled_validation"] = self.probe_fixture("pi_research_completion")
+        summary = self.summary("summarizeOps", data)
+        result = self.execute(mode="browser", reports=self.reports_fixture(), ops=data)["elements"]
+        self.assertEqual((summary["checkState"], summary["checkUnknown"], summary["checkIssues"]), ("unknown", 1, 0))
+        self.assertIn("近 24 小时无已完成请求样本", result["ops-reasons"]["text"])
+        self.assertIn("Grok 4.6 单次模型完成", result["ops-pi-validation"]["text"])
+        self.assertIn("未验证工具与完整业务流程", result["ops-pi-validation"]["text"])
+        self.assertEqual(result["ops-pi-validation"]["className"], "status ok")
+
+    def test_controlled_pi_auth_failure_is_an_issue_and_keeps_idle_unknown(self):
+        data = self.idle_pi_fixture()
+        pi = next(row for row in data["checks"] if row["id"] == "pi_requests")
+        pi["controlled_validation"] = self.probe_fixture("pi_research_completion", "fail")
+        pi["controlled_validation"].update(label="RAW_SECRET", error="RAW_ERROR")
+        summary = self.summary("summarizeOps", data)
+        result = self.execute(mode="browser", reports=self.reports_fixture(), ops=data)["elements"]
+        self.assertEqual((summary["checkState"], summary["checkIssues"], summary["checkUnknown"]), ("warning", 1, 1))
+        self.assertIn("Grok 授权已失效，需重新授权", result["ops-pi-validation"]["text"])
+        self.assertEqual(result["ops-pi-validation"]["className"], "status warning")
+        self.assertIn("近 24 小时无已完成请求样本", result["ops-reasons"]["text"])
+        self.assertNotIn("RAW_", " ".join(row["text"] for row in result.values()))
+        self.assertIn("真实使用样本", result["ops-reasons"]["text"])
+        self.assertIn("pi 受控实测", result["ops-pi-validation"]["text"])
+
+    def test_probe_scope_code_time_and_ttl_fail_closed(self):
+        changes = ({"scope": "other"}, {"status": "other"}, {"code": "unknown_code"},
+                   {"checked_at": (self.NOW + timedelta(seconds=61)).isoformat()},
+                   {"checked_at": "2026-09-22T24:00:00Z"},
+                   {"checked_at": "2026-09-22T15:30:00"},
+                   {"expires_at": self.NOW.isoformat()},
+                   {"expires_at": (self.NOW + timedelta(seconds=3601)).isoformat()})
+        for scope, field, element in (("vix_source", "source_validation", "ops-source-validation"),
+                                      ("pi_research_completion", "controlled_validation", "ops-pi-validation")):
+            specific = ({"source_as_of": None}, {"source_as_of": "bad"},
+                        {"source_as_of": (self.NOW + timedelta(seconds=61)).isoformat()},
+                        {"source_as_of": (self.NOW - timedelta(hours=25)).isoformat()},
+                        {"source_as_of": (self.NOW - timedelta(hours=23, minutes=45)).isoformat()},
+                        {"status": "fail", "code": "vix_source_unverified"}) if scope == "vix_source" else ({"model": "other"}, {"model": None}, {"status": "fail", "code": "probe_error"}, {"status": "fail", "code": "busy"})
+            for change in (*changes, *specific):
+                data = self.ops_fixture()
+                row = next(row for row in data["checks"] if row["id"] == ("morning" if scope == "vix_source" else "pi_requests"))
+                row[field] = {**self.probe_fixture(scope), **change}
+                with self.subTest(scope=scope, change=change):
+                    result = self.execute(mode="browser", reports=self.reports_fixture(), ops=data)["elements"]
+                    self.assertEqual(result[element]["className"], "status unknown")
+                    self.assertNotIn("复测通过", result[element]["text"])
+
+    def test_probe_expiry_and_failed_refresh_do_not_leave_green_results(self):
+        data = self.ops_fixture()
+        for row in data["checks"]:
+            if row["id"] in ("morning", "pi_requests"):
+                scope, field = ("vix_source", "source_validation") if row["id"] == "morning" else ("pi_research_completion", "controlled_validation")
+                row[field] = self.probe_fixture(scope)
+                row[field]["expires_at"] = (self.NOW + timedelta(seconds=60)).isoformat()
+        for options in ({"advance_ms": 61000}, {"refresh": True, "behavior": {"ops": {"fail_second": True}}}):
+            with self.subTest(options=options):
+                result = self.execute(mode="browser", reports=self.reports_fixture(), ops=data, **options)["elements"]
+                for element in ("ops-source-validation", "ops-pi-validation"):
+                    self.assertEqual(result[element]["className"], "status unknown")
 
     def test_missing_duplicate_and_malformed_sources_are_not_ready(self):
         fixtures = []

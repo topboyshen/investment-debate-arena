@@ -40,6 +40,26 @@ OPS_PAGE = r'''<!doctype html>
  const rate = value => num(value) ? bytes(value) + '/s' : missing;
  const duration = value => {if (!num(value)) return missing; const days = Math.floor(value / 86400), hours = Math.floor(value % 86400 / 3600), minutes = Math.floor(value % 3600 / 60); if (days) return days + ' 天 ' + hours + ' 小时'; if (hours) return hours + ' 小时 ' + minutes + ' 分'; return minutes + ' 分';};
  const stamp = value => {const date = Date.parse(value); return typeof value === 'string' && Number.isFinite(date) ? new Date(date).toLocaleString('zh-CN', {timeZone:'Asia/Shanghai',hour12:false}) : missing;};
+ const probeStamp = value => {if(typeof value!=='string'||value.length>64)return null;const match=/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);if(!match||Number(match[2])>23||Number(match[3])>59||Number(match[4])>59)return null;const day=Date.parse(match[1]+'T00:00:00Z');if(!Number.isFinite(day)||new Date(day).toISOString().slice(0,10)!==match[1])return null;const n=Date.parse(value);return Number.isFinite(n)?n:null;};
+ function validationProbe(value,scope,now=Date.now()) {
+  const result={state:'unknown',checkedAt:null,sourceAsOf:null,code:null};
+  const codes=scope==='vix_source'?['vix_source_valid','vix_source_fetch_failed','vix_source_quality_failed','vix_source_unverified']:['pi_probe_valid','auth_required','timeout','rate_limited','quota_exceeded','upstream_error','invalid_response','probe_error','busy'];
+  if(!obj(value)||value.scope!==scope||!['pass','fail','unverified'].includes(value.status)||!codes.includes(value.code)||(scope==='pi_research_completion'&&value.model!=='xai/grok-4.6'))return result;
+  const checked=probeStamp(value.checked_at),expires=probeStamp(value.expires_at),source=probeStamp(value.source_as_of);
+  if(checked===null||expires===null||checked>now+60000||expires<=checked||expires-checked>3600000||expires<=now)return result;
+  if(scope==='vix_source'&&(value.status==='pass'&&source===null||value.source_as_of!=null&&(source===null||source>checked+60000||source>now+60000)))return result;
+  if(scope==='vix_source'&&value.status==='pass'&&expires>source+86400000)return result;
+  const passCode=scope==='vix_source'?'vix_source_valid':'pi_probe_valid';
+  if(value.status==='pass'&&value.code!==passCode||value.status!=='pass'&&value.code===passCode)return result;
+  const failCodes=scope==='vix_source'?['vix_source_fetch_failed','vix_source_quality_failed']:['auth_required','timeout','rate_limited','quota_exceeded','upstream_error','invalid_response'];
+  if(value.status==='fail'&&!failCodes.includes(value.code))return result;
+  result.state=value.status==='pass'?'ok':value.status==='fail'?'warning':'unknown';result.checkedAt=value.checked_at;result.sourceAsOf=source===null?null:value.source_as_of;result.code=value.code;return result;
+ }
+ function validationText(scope,value) {
+  const message=scope==='vix_source'?(value.state==='ok'?'VIX 来源复测通过；不能证明整份已发报告完整':value.state==='warning'?'VIX 来源复测未通过；来源数据需关注':'VIX 来源复测尚未验证'):(value.state==='ok'?'pi 受控实测通过（Grok 4.6 单次模型完成）；未验证工具与完整业务流程':value.state==='warning'?(value.code==='auth_required'?'pi 受控实测：Grok 授权已失效，需重新授权':'pi 受控实测未通过，模型通路需关注'):'pi 受控实测尚未验证');
+  return message+(value.checkedAt?' · 复测 '+stamp(value.checkedAt)+'（北京时间）':'');
+ }
+ const probeFailure = check => check.id==='pi_requests' ? validationProbe(check.controlled_validation,'pi_research_completion').state==='warning' : check.id==='morning'&&validationProbe(check.source_validation,'vix_source').state==='warning';
  const percent = (part, total) => num(part) && num(total) && total > 0 && part <= total ? part / total * 100 : null;
  const pct = value => num(value) && value <= 100 ? value.toFixed(1) + '%' : missing;
  const statusNames = {ok:'正常',warning:'需关注',error:'异常',unknown:'未采集',stale:'数据过期'};
@@ -71,13 +91,14 @@ OPS_PAGE = r'''<!doctype html>
   banner.className = 'banner' + (fetchError ? ' error' : '');
   if (fetchError) banner.textContent = '本次读取失败或数据格式无效。以下保留上次快照，不代表当前状态；请稍后刷新。';
   else if (stale) banner.textContent = '快照已超过 3 分钟未更新。以下是历史状态，不能据此确认服务当前正常。';
+  renderChecks(snapshot.checks, stale || fetchError);
   renderSummary(snapshot, stale || fetchError);
  }
  function renderSummary(data, uncertain) {
   const services = data.services, checks = data.checks;
   const active = services.filter(s => s.active_state === 'active').length;
   const inactive = services.filter(s => serviceLevel(s) === 'error' || serviceLevel(s) === 'warning').length;
-  const attention = checks.filter(c => ['warning','error','stale'].includes(checkLevel(c))).length;
+  const attention = checks.filter(c => ['warning','error','stale'].includes(checkLevel(c)) || probeFailure(c)).length;
   const unknown = services.filter(s => serviceLevel(s) === 'unknown').length + checks.filter(c => !Object.hasOwn(statusNames,checkLevel(c)) || checkLevel(c) === 'unknown').length;
   const incomplete = !services.length || !checks.length || unknown > 0;
   let label = uncertain ? '历史快照' : inactive || attention ? '需要关注' : incomplete ? '状态未完整验证' : '服务与巡检未见异常';
@@ -138,7 +159,7 @@ OPS_PAGE = r'''<!doctype html>
    ['采集时间',stamp(m.collected_at),'北京时间 · 未采集不会显示为零']
   ]) {const row=node('div','detail-row'),labelNode=node('div','detail-title',label),copy=node('div');copy.append(node('p','detail-text',value),node('p','cell-note',detail));row.append(labelNode,copy);mtg.append(row);}
  }
- function renderChecks(list) {
+ function renderChecks(list, uncertain = false) {
   const parent=el('checks');parent.replaceChildren();
   if (!list.length) {parent.append(node('div','panel empty','运维巡检未采集，不能据此判断没有异常。'));return;}
   for (const check of list) {
@@ -147,10 +168,12 @@ OPS_PAGE = r'''<!doctype html>
    const level=checkLevel(check);
    const sampleNames={recent_success:'有成功样本',recent_without_success:'有结束样本，但无成功',idle:'无结束样本',unverified:'无可核验样本'};
    const statusLabel=pi&&level==='unknown' ? known({idle:'空闲未验证',recent_without_success:'成功未验证',unverified:'尚无样本'},check.sample_status,'未验证') : known(statusNames,level);
-   head.append(node('h3','',text(check.label)||text(check.id)||'巡检'),badge(statusLabel,level));
+   const morningRecord=check.id==='morning'&&!uncertain&&['warning','error'].includes(level)&&validationProbe(check.source_validation,'vix_source').state==='ok';
+   head.append(node('h3','',morningRecord?'当次晨报质量记录':text(check.label)||text(check.id)||'巡检'),badge(statusLabel,level));
    card.append(head,node('div','check-time','采集 '+stamp(check.checked_at)));
    if (num(check.source_interval_seconds)) card.append(node('div','check-time','计划每 '+duration(check.source_interval_seconds)+' 检查一次'));
    if (pi) {
+    if(check.controlled_validation!==undefined)card.append(node('p','detail-text','真实使用样本：以下记录仅统计实际业务请求。'));
     const seconds=check.sample_window_seconds;
     const window=Number.isInteger(seconds)&&seconds>0&&seconds<=7*86400 ? (seconds%3600===0?seconds/3600+' 小时':duration(seconds)) : '窗口未提供';
     card.append(node('div','check-time','最近成功 '+(check.last_success_at?stamp(check.last_success_at):'尚无记录')));
@@ -159,13 +182,18 @@ OPS_PAGE = r'''<!doctype html>
    }
    if ((check.issues||[]).length) {const ul=node('ul');for (const issue of check.issues) ul.append(node('li','',text(issue,240)));card.append(ul);}
    else card.append(node('p','detail-text',level==='ok'?'本次已采集范围内无问题。':pi&&level==='unknown'?'近期请求成功证据未验证；不能据此判断通道正常。':'暂无可用的异常详情。'));
+   if (pi || check.id==='morning') {
+    const scope=pi?'pi_research_completion':'vix_source',value=validationProbe(uncertain?null:pi?check.controlled_validation:check.source_validation,scope);
+    card.append(node('p','detail-text',validationText(scope,value)),badge(value.state==='ok'?'复测通过':value.state==='warning'?'复测失败':'复测未验证',value.state));
+    if(value.sourceAsOf)card.append(node('div','check-time','来源数据时间 '+stamp(value.sourceAsOf)+'（北京时间）'));
+   }
    parent.append(card);
   }
 }
  async function load() {
   if (loading) return;loading=true;el('refresh').disabled=true;
   const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),12000);
-  try {const response=await fetch('/ops/data.json',{cache:'no-store',credentials:'omit',signal:controller.signal});if (!response.ok) throw new Error('snapshot unavailable');const data=await response.json();if (!validSnapshot(data)) throw new Error('invalid snapshot');snapshot=data;fetchError=false;renderHost(data.host);renderServices(data.services);renderNetwork(data.network||{});renderChecks(data.checks);freshness();}
+  try {const response=await fetch('/ops/data.json',{cache:'no-store',credentials:'omit',signal:controller.signal});if (!response.ok) throw new Error('snapshot unavailable');const data=await response.json();if (!validSnapshot(data)) throw new Error('invalid snapshot');snapshot=data;fetchError=false;renderHost(data.host);renderServices(data.services);renderNetwork(data.network||{});freshness();}
   catch (_) {fetchError=true;if (snapshot) freshness();else {el('sync').textContent='尚无可用快照 · 每 60 秒重试';el('banner').hidden=false;el('banner').className='banner error';el('banner').textContent='暂时无法读取有效的服务器状态。没有用示例数据代替，请稍后刷新。';el('summary-title').textContent='状态暂时未知';el('summary-copy').textContent='读取失败或快照格式无效，不代表服务故障，也不能据此确认正常。';}}
   finally {clearTimeout(timeout);loading=false;el('refresh').disabled=false;}
  }

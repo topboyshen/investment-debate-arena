@@ -28,7 +28,7 @@ HOME_PAGE = r'''<!doctype html>
 <div class="card-actions"><a class="primary-link" href="https://t.me/lucyjie_clawdbot" target="_blank" rel="noopener noreferrer">在 Telegram 打开助手 <span aria-hidden="true">↗</span></a><div class="sub-links"><a href="/ops/">查看助手服务详情</a></div></div></article>
 <article class="card" id="ops-card"><div class="card-head"><span class="icon" aria-hidden="true">⌘</span><span class="access">公开只读</span></div><h2>系统与网络状态</h2><p class="description">dedirock-infra 巡检、sing-box / MTG、主机资源与服务状态。</p>
 <div class="info-box"><p class="status" id="ops-status" role="status">正在读取服务运行快照…</p><p class="data-meta" id="ops-count">仅统计已纳入监测的服务。</p><p class="data-meta" id="ops-meta">快照尚未读取；未知不等于正常。</p></div>
-<div class="info-box"><p class="status" id="ops-check-status" role="status">巡检与业务验证尚未读取</p><p class="data-meta check-reasons" id="ops-reasons"></p></div>
+<div class="info-box"><p class="status" id="ops-check-status" role="status">巡检与业务验证尚未读取</p><p class="data-meta check-reasons" id="ops-reasons"></p><p class="status" id="ops-source-validation" role="status">VIX 来源复测尚未验证</p><p class="status" id="ops-pi-validation" role="status">pi 受控实测尚未验证</p></div>
 <div class="card-actions"><a class="primary-link" href="/ops/">查看详细数据与状态 <span aria-hidden="true">↗</span></a><div class="sub-links"><a href="/netdata/">Netdata 深度监控</a></div><p class="scope-note">Netdata 若显示欢迎页，可选择底部的匿名使用。</p></div></article>
 <article class="card" id="arena-card"><div class="card-head"><span class="icon" aria-hidden="true">◈</span><span class="access">原型演示</span></div><h2>投研辩论场</h2><p class="description">围绕一个观点，查看多角色论证、反证与主审归纳。</p><div class="info-box"><p class="status">演示资料，不是实时投研结果</p><p class="data-meta">当前提供示例证据包；不读取真实持仓，不执行交易。</p></div>
 <div class="card-actions"><a class="primary-link" href="/arena/">打开辩论场演示 <span aria-hidden="true">↗</span></a></div></article>
@@ -45,6 +45,24 @@ function stamp(value){if(typeof value!=='string'||value.length>64)return null;co
 function freshness(value,now,maxAge){const n=stamp(value);return n===null||n>now+60000?'unknown':now-n>maxAge*1000?'stale':'fresh';}
 function validDate(value,now){if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(value))return false;const n=Date.parse(value+'T00:00:00Z');return Number.isFinite(n)&&new Date(n).toISOString().slice(0,10)===value&&value<=new Date(now+8*3600000).toISOString().slice(0,10);}
 function indexed(rows,allowed){if(!Array.isArray(rows)||rows.length>100)return null;const values={};for(const row of rows){if(!record(row)||typeof row.id!=='string')return null;if(!allowed.includes(row.id))continue;if(Object.hasOwn(values,row.id))return null;values[row.id]=row;}return values;}
+function validationProbe(value,scope,now=Date.now()){
+ const result={state:'unknown',checkedAt:null,sourceAsOf:null,code:null};
+ const codes=scope==='vix_source'?['vix_source_valid','vix_source_fetch_failed','vix_source_quality_failed','vix_source_unverified']:['pi_probe_valid','auth_required','timeout','rate_limited','quota_exceeded','upstream_error','invalid_response','probe_error','busy'];
+ if(!record(value)||value.scope!==scope||!['pass','fail','unverified'].includes(value.status)||!codes.includes(value.code)||(scope==='pi_research_completion'&&value.model!=='xai/grok-4.6'))return result;
+ const checked=stamp(value.checked_at),expires=stamp(value.expires_at),source=stamp(value.source_as_of);
+ if(checked===null||expires===null||checked>now+60000||expires<=checked||expires-checked>3600000||expires<=now)return result;
+ if(scope==='vix_source'&&(value.status==='pass'&&source===null||value.source_as_of!=null&&(source===null||source>checked+60000||source>now+60000)))return result;
+ if(scope==='vix_source'&&value.status==='pass'&&expires>source+86400000)return result;
+ const passCode=scope==='vix_source'?'vix_source_valid':'pi_probe_valid';
+ if(value.status==='pass'&&value.code!==passCode||value.status!=='pass'&&value.code===passCode)return result;
+ const failCodes=scope==='vix_source'?['vix_source_fetch_failed','vix_source_quality_failed']:['auth_required','timeout','rate_limited','quota_exceeded','upstream_error','invalid_response'];
+ if(value.status==='fail'&&!failCodes.includes(value.code))return result;
+ result.state=value.status==='pass'?'ok':value.status==='fail'?'warning':'unknown';result.checkedAt=value.checked_at;result.sourceAsOf=source===null?null:value.source_as_of;result.code=value.code;return result;
+}
+function validationText(scope,value){
+ const message=scope==='vix_source'?(value.state==='ok'?'VIX 来源复测通过；不能证明整份已发报告完整':value.state==='warning'?'VIX 来源复测未通过；来源数据需关注':'VIX 来源复测尚未验证'):(value.state==='ok'?'pi 受控实测通过（Grok 4.6 单次模型完成）；未验证工具与完整业务流程':value.state==='warning'?(value.code==='auth_required'?'pi 受控实测：Grok 授权已失效，需重新授权':'pi 受控实测未通过，模型通路需关注'):'pi 受控实测尚未验证');
+ return message+(value.checkedAt?' · 复测 '+clock(value.checkedAt):'');
+}
 function summarizeReports(payload,now=Date.now()){
  const result={state:'unknown',updatedAt:null,items:{overseas:{date:null,state:'unknown'},signal_gate:{date:null,state:'unknown'}}};
  if(!record(payload)||payload.schema_version!==1)return result;
@@ -54,13 +72,16 @@ function summarizeReports(payload,now=Date.now()){
  result.state=age==='stale'?'stale':Object.values(result.items).every(row=>row.date&&row.state==='ok')?'ready':Object.values(result.items).some(row=>row.state==='partial')?'partial':'unknown';return result;
 }
 function summarizeOps(payload,now=Date.now()){
- const result={state:'unknown',serviceState:'unknown',checkState:'unknown',updatedAt:null,active:0,total:REQUIRED_SERVICES.length,serviceIssues:0,serviceUnknown:0,checkIssues:0,checkUnknown:0,unknown:0,assistant:'unknown',reasons:[]};
+ const result={state:'unknown',serviceState:'unknown',checkState:'unknown',updatedAt:null,active:0,total:REQUIRED_SERVICES.length,serviceIssues:0,serviceUnknown:0,checkIssues:0,checkUnknown:0,unknown:0,assistant:'unknown',reasons:[],sourceValidation:validationProbe(null,'vix_source',now),controlledValidation:validationProbe(null,'pi_research_completion',now)};
  if(!record(payload)||payload.schema_version!==1)return result;
  const services=indexed(payload.services,REQUIRED_SERVICES),checks=indexed(payload.checks,Object.keys(CHECK_AGES));
  const age=freshness(payload.exported_at,now,180);if(age==='unknown')return result;result.updatedAt=payload.exported_at;
+ result.sourceValidation=validationProbe(checks&&checks.morning&&checks.morning.source_validation,'vix_source',now);
+ result.controlledValidation=validationProbe(checks&&checks.pi_requests&&checks.pi_requests.controlled_validation,'pi_research_completion',now);
+ const countedIssues={};
  for(const id of REQUIRED_SERVICES){const row=services&&services[id];if(!row||!['active','inactive','failed','activating','deactivating','reloading'].includes(row.active_state)){result.serviceUnknown++;continue;}if(row.active_state==='active'&&row.sub_state==='running')result.active++;else if(['inactive','failed'].includes(row.active_state)||['dead','failed','exited','start','stop','auto-restart','reload'].includes(row.sub_state))result.serviceIssues++;else result.serviceUnknown++;}
  for(const id of Object.keys(CHECK_AGES)){
-  const row=checks&&checks[id],label=CHECK_NAMES[id];
+  const row=checks&&checks[id],label=id==='morning'&&age==='fresh'&&result.sourceValidation.state==='ok'&&row&&['warning','error'].includes(row.status)?'当次晨报质量记录':id==='pi_requests'&&result.controlledValidation.state==='warning'?'pi 请求（真实使用样本）':CHECK_NAMES[id];
   if(!row||!Array.isArray(row.issues)||row.issues.some(x=>typeof x!=='string')||!['ok','warning','error','unknown','stale'].includes(row.status)||freshness(row.checked_at,now,CHECK_AGES[id])!=='fresh'){
    result.checkUnknown++;result.reasons.push(label+'：检查结果缺失或过期，待核验');continue;
   }
@@ -68,12 +89,14 @@ function summarizeOps(payload,now=Date.now()){
    result.checkUnknown++;result.reasons.push(label+'：近期请求成功未验证 · 检查 '+clock(row.checked_at));continue;
   }
   if(row.status==='unknown'||row.status==='stale')result.checkUnknown++;
-  else if(row.status!=='ok'||row.issues.length)result.checkIssues++;
+  const rowIssue=row.status!=='unknown'&&row.status!=='stale'&&(row.status!=='ok'||row.issues.length);
+  if(rowIssue){result.checkIssues++;countedIssues[id]=true;}
   if(row.status!=='ok'||row.issues.length){
    const detail=row.issues[0];
    result.reasons.push(label+'：'+(typeof detail==='string'&&detail.length<=240&&!/[<>\u0000-\u001f]/.test(detail)?detail:'检查结果待核验，请查看详情')+' · 检查 '+clock(row.checked_at));
   }
  }
+ for(const [id,value] of [['morning',result.sourceValidation],['pi_requests',result.controlledValidation]])if(value.state==='warning'&&!countedIssues[id])result.checkIssues++;
  result.unknown=result.serviceUnknown+result.checkUnknown;
  result.serviceState=age==='stale'?'stale':result.serviceIssues?'warning':result.serviceUnknown?'unknown':'ok';
  result.checkState=age==='stale'?'stale':result.checkIssues?'warning':result.checkUnknown?'unknown':'ok';
@@ -95,6 +118,8 @@ if(typeof document!=='undefined'){
   el('ops-count').textContent=ops.updatedAt?ops.active+' / '+ops.total+' 项已监测服务运行 · '+ops.serviceIssues+' 项服务异常'+(ops.serviceUnknown?' · '+ops.serviceUnknown+' 项服务未确认':''):'没有用零异常代替缺失数据。';
   status('ops-check-status',failed.ops?'巡检与业务验证读取失败':ops.checkState==='stale'?'巡检与业务验证：页面快照已过期':ops.updatedAt?'巡检与业务验证：'+ops.checkIssues+' 项问题 · '+ops.checkUnknown+' 项未验证':'巡检与业务验证尚未确认',failed.ops?'unknown':ops.checkState);
   el('ops-reasons').textContent=failed.ops?'':ops.reasons.join('\n');
+  const probesCurrent=!failed.ops&&freshness(ops.updatedAt,Date.now(),180)==='fresh';
+  for(const [id,scope,value] of [['ops-source-validation','vix_source',ops.sourceValidation],['ops-pi-validation','pi_research_completion',ops.controlledValidation]]){const shown=probesCurrent?value:validationProbe(null,scope);status(id,validationText(scope,shown),shown.state);}
   el('ops-meta').textContent='服务快照 '+clock(ops.updatedAt)+' · 不等于整机全部服务或业务成功；下方检查使用各自时间。';
   const assistant=failed.ops?'unknown':ops.assistant;
   status('assistant-status',({ok:'Bot 与 pi 进程运行中',warning:'助手服务需关注',unknown:'助手状态尚未确认',stale:'助手状态已过期'})[assistant],assistant);

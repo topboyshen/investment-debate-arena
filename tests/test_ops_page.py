@@ -99,11 +99,13 @@ class Element {
  addEventListener(name,fn) {this.handlers[name]=fn;}
  get firstChild() {return this.children[0]||null;}
 }
-const ids={},intervals=[],requests=[];
+const ids={},intervals=[],requests=[],timers=[];
 let calls=0;
+let now=Date.now();
+class TestDate extends Date {static now(){return now;}}
 const context={document:{getElementById:id=>ids[id]||(ids[id]=new Element('div')),createElement:tag=>new Element(tag)},
- Date,Number,Object,Array,String,Math,AbortController,setTimeout,clearTimeout,
- setInterval:(fn,ms)=>intervals.push(ms),
+ Date:TestDate,Number,Object,Array,String,Math,AbortController,setTimeout,clearTimeout,
+ setInterval:(fn,ms)=>{intervals.push(ms);timers.push({fn,ms});},
  fetch:async(url,opts)=>{requests.push({url,cache:opts.cache,credentials:opts.credentials});calls++;
   if(input.fail || (input.fail_second&&calls>1)) throw new Error('fetch failed');
   return {ok:true,json:async()=>input.snapshot};}
@@ -111,6 +113,7 @@ const context={document:{getElementById:id=>ids[id]||(ids[id]=new Element('div')
 vm.runInNewContext(input.script,context);
 setTimeout(async()=>{
  if(input.fail_second){await ids.refresh.handlers.click();}
+ if(input.advance_ms){now+=input.advance_ms;for(const timer of timers)if(timer.ms===10000)timer.fn();}
  const elements={};for(const [key,n] of Object.entries(ids))elements[key]={text:n.textContent,hidden:n.hidden,className:n.className};
  const tags=[];function walk(n){tags.push(n.tag);for(const c of n.children)walk(c);}for(const n of Object.values(ids))walk(n);
  process.stdout.write(JSON.stringify({elements,requests,intervals,tags}));
@@ -120,6 +123,23 @@ setTimeout(async()=>{
 
 @unittest.skipUnless(shutil.which("node"), "Node is needed for executable UI regression tests")
 class OpsRendererTests(unittest.TestCase):
+    def probe_fixture(self, scope, status="pass"):
+        now = datetime.datetime.now(datetime.timezone.utc)
+        value = {"scope": scope, "status": status, "checked_at": now.isoformat(),
+                 "expires_at": (now + datetime.timedelta(minutes=30)).isoformat()}
+        if scope == "vix_source":
+            value.update(code="vix_source_valid" if status == "pass" else "vix_source_quality_failed",
+                         source_as_of=(now - datetime.timedelta(hours=12)).isoformat())
+        else:
+            value.update(model="xai/grok-4.6", code="pi_probe_valid" if status == "pass" else "auth_required")
+        return value
+
+    def idle_pi(self):
+        return {"id": "pi_requests", "label": "pi 请求结果", "status": "unknown",
+                "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "sample_status": "idle", "sample_window_seconds": 86400,
+                "issues": ["近 24 小时无已完成请求样本；当前可用性未验证"]}
+
     def fixture(self):
         return {
             "schema_version": 1,
@@ -205,6 +225,94 @@ class OpsRendererTests(unittest.TestCase):
         self.assertIn("近期样本（24 小时）：无结束样本", checks)
         self.assertEqual(result["elements"]["summary-title"]["text"], "状态未完整验证")
         self.assertNotIn("ok", result["elements"]["summary-badge"]["className"].split())
+
+    def test_vix_retest_pass_keeps_historical_report_problem(self):
+        data = self.fixture()
+        data["checks"].append({"id": "morning", "label": "海外晨报", "status": "error",
+                               "issues": ["历史晨报缺 VIX"],
+                               "source_validation": self.probe_fixture("vix_source")})
+        result = self.render(data)
+        checks = result["elements"]["checks"]["text"]
+        self.assertIn("历史晨报缺 VIX", checks)
+        self.assertIn("当次晨报质量记录", checks)
+        self.assertIn("VIX 来源复测通过；不能证明整份已发报告完整", checks)
+        self.assertIn("复测 ", checks)
+        self.assertIn("来源数据时间", checks)
+        self.assertEqual(result["elements"]["summary-title"]["text"], "需要关注")
+        self.assertIn("1 项巡检需关注", result["elements"]["summary-copy"]["text"])
+
+    def test_pi_controlled_pass_does_not_claim_real_business_success(self):
+        data = self.fixture()
+        pi = self.idle_pi()
+        pi["controlled_validation"] = self.probe_fixture("pi_research_completion")
+        data["checks"].append(pi)
+        result = self.render(data)
+        checks = result["elements"]["checks"]["text"]
+        self.assertIn("近 24 小时无已完成请求样本", checks)
+        self.assertIn("空闲未验证", checks)
+        self.assertIn("Grok 4.6 单次模型完成", checks)
+        self.assertIn("未验证工具与完整业务流程", checks)
+        self.assertEqual(result["elements"]["summary-title"]["text"], "状态未完整验证")
+
+    def test_pi_auth_failure_is_attention_while_idle_sample_remains_unknown(self):
+        data = self.fixture()
+        pi = self.idle_pi()
+        pi["controlled_validation"] = self.probe_fixture("pi_research_completion", "fail")
+        pi["controlled_validation"].update(label="RAW_SECRET", error="RAW_ERROR")
+        data["checks"].append(pi)
+        result = self.render(data)
+        checks = result["elements"]["checks"]["text"]
+        self.assertIn("Grok 授权已失效，需重新授权", checks)
+        self.assertIn("近 24 小时无已完成请求样本", checks)
+        self.assertIn("空闲未验证", checks)
+        self.assertNotIn("RAW_", checks)
+        self.assertIn("真实使用样本", checks)
+        self.assertIn("pi 受控实测", checks)
+        self.assertEqual(result["elements"]["summary-title"]["text"], "需要关注")
+        self.assertIn("1 项巡检需关注", result["elements"]["summary-copy"]["text"])
+        self.assertIn("1 项状态未验证", result["elements"]["summary-copy"]["text"])
+
+    def test_probe_scope_model_and_time_fail_closed(self):
+        now = datetime.datetime.now(datetime.timezone.utc)
+        changes = ({"scope": "other"}, {"status": "other"}, {"code": "unknown_code"},
+                   {"checked_at": (now + datetime.timedelta(minutes=2)).isoformat()},
+                   {"checked_at": "2026-10-08T24:00:00Z"}, {"checked_at": "2026-10-08T12:00:00"},
+                   {"expires_at": (now - datetime.timedelta(seconds=1)).isoformat()})
+        for scope, field in (("vix_source", "source_validation"), ("pi_research_completion", "controlled_validation")):
+            specific = ({"source_as_of": None}, {"source_as_of": "bad"},
+                        {"source_as_of": (now + datetime.timedelta(minutes=2)).isoformat()},
+                        {"source_as_of": (now - datetime.timedelta(hours=25)).isoformat()},
+                        {"source_as_of": (now - datetime.timedelta(hours=23, minutes=45)).isoformat()},
+                        {"status": "fail", "code": "vix_source_unverified"}) if scope == "vix_source" else ({"model": "other"}, {"status": "fail", "code": "probe_error"}, {"status": "fail", "code": "busy"})
+            for change in (*changes, *specific, {"expires_at": (now + datetime.timedelta(hours=2)).isoformat()}):
+                data = self.fixture()
+                row = self.idle_pi() if scope == "pi_research_completion" else {"id": "morning", "status": "error", "issues": ["历史晨报缺 VIX"]}
+                row[field] = {**self.probe_fixture(scope), **change}
+                data["checks"].append(row)
+                with self.subTest(scope=scope, change=change):
+                    checks = self.render(data)["elements"]["checks"]["text"]
+                    self.assertNotIn("复测通过", checks)
+                    self.assertNotIn("受控实测通过", checks)
+                    self.assertIn("复测未验证", checks)
+
+    def test_probe_expiry_stale_snapshot_and_failed_refresh_remove_pass_badges(self):
+        data = self.fixture()
+        pi = self.idle_pi()
+        pi["controlled_validation"] = self.probe_fixture("pi_research_completion")
+        checked = datetime.datetime.fromisoformat(pi["controlled_validation"]["checked_at"])
+        pi["controlled_validation"]["expires_at"] = (checked + datetime.timedelta(seconds=60)).isoformat()
+        data["checks"].append(pi)
+        data["checks"].append({"id": "morning", "status": "error", "issues": ["历史晨报缺 VIX"],
+                               "source_validation": self.probe_fixture("vix_source")})
+        for options in ({"advance_ms": 181000}, {"fail_second": True}):
+            with self.subTest(options=options):
+                checks = self.render(data, **options)["elements"]["checks"]["text"]
+                self.assertNotIn("复测通过", checks)
+                self.assertIn("历史晨报缺 VIX", checks)
+                self.assertIn("近 24 小时无已完成请求样本", checks)
+        checks = self.render(data, advance_ms=61000)["elements"]["checks"]["text"]
+        self.assertNotIn("受控实测通过", checks)
+        self.assertIn("VIX 来源复测通过", checks)
 
     def test_old_pi_snapshot_with_green_status_but_no_sample_proof_is_not_green(self):
         data = self.fixture()

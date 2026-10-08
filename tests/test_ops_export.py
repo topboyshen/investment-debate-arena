@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import stat
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -399,6 +400,279 @@ class OpsExportTests(unittest.TestCase):
                     exporter.atomic_json(public, {"public": 2}, 0o640, os.getgid())
             self.assertEqual(public.read_bytes(), before)
             self.assertEqual(list(root.glob(".ops-*")), [])
+
+
+class ControlledValidationTests(unittest.TestCase):
+    VIX_HASHES = {'collector_sha256': hashlib.sha256(b'vix collector').hexdigest(),
+                  'validator_sha256': hashlib.sha256(b'vix validator').hexdigest()}
+    PI_HASHES = {'broker_sha256': hashlib.sha256(b'pi broker').hexdigest(),
+                 'research_sha256': hashlib.sha256(b'pi research').hexdigest(),
+                 'client_sha256': hashlib.sha256(b'pi client').hexdigest()}
+    AUTH_METADATA = {'inode': 54321, 'mtime_ns': 1800000000000000000, 'size': 2345}
+
+    def vix_receipt(self, **updates):
+        result = {'version': 1, 'scope': 'vix_source', 'asset_code': 'VIX',
+                  'status': 'pass', 'code': 'vix_source_valid', 'source_id': 'cboe',
+                  'checked_at': CHECKED, 'expires_at': exporter.iso(NOW + 3500),
+                  'source_as_of': exporter.iso(NOW - 600), 'ttl_seconds': 3600,
+                  'implementation': self.VIX_HASHES}
+        return {**result, **updates}
+
+    def pi_receipt(self, **updates):
+        result = {'version': 1, 'scope': 'pi_research_completion', 'model': 'xai/grok-4.6',
+                  'status': 'pass', 'code': 'pi_probe_valid', 'checked_at': CHECKED,
+                  'expires_at': exporter.iso(NOW + 3500), 'ttl_seconds': 3600,
+                  'implementation': self.PI_HASHES, 'binding_auth': self.AUTH_METADATA}
+        return {**result, **updates}
+
+    def vix(self, data=None, *, current=None):
+        with mock.patch.object(exporter, 'small_read', return_value=json.dumps(data if data is not None else self.vix_receipt())), \
+             mock.patch.object(exporter, 'current_vix_implementation', return_value=current or self.VIX_HASHES):
+            return exporter.vix_source_validation(NOW)
+
+    def pi(self, data=None, *, current=None, authentication=None):
+        with mock.patch.object(exporter, 'small_read', return_value=json.dumps(data if data is not None else self.pi_receipt())), \
+             mock.patch.object(exporter, 'current_implementation', return_value=current or self.PI_HASHES), \
+             mock.patch.object(exporter, 'current_pi_auth_metadata', return_value=authentication or self.AUTH_METADATA):
+            return exporter.pi_controlled_validation(NOW)
+
+    def test_vix_pass_exports_only_fixed_scope_label_and_times(self):
+        result = self.vix()
+        self.assertEqual(result, {'scope': 'vix_source', 'status': 'pass', 'code': 'vix_source_valid',
+                                 'label': exporter.VIX_PROBE_LABELS['vix_source_valid'],
+                                 'checked_at': CHECKED, 'expires_at': exporter.iso(NOW + 3500),
+                                 'source_as_of': exporter.iso(NOW - 600)})
+        encoded = json.dumps(result)
+        for private in ('implementation', 'collector_sha256', 'validator_sha256', '/opt/',
+                        *self.VIX_HASHES.values()):
+            self.assertNotIn(private, encoded)
+
+    def test_vix_future_stale_and_extended_evidence_cannot_pass(self):
+        for changes in ({'checked_at': exporter.iso(NOW + 61)},
+                        {'source_as_of': exporter.iso(NOW + 61)},
+                        {'source_as_of': exporter.iso(NOW - 25 * 3600)},
+                        {'expires_at': exporter.iso(NOW)},
+                        {'expires_at': CHECKED},
+                        {'expires_at': exporter.iso(NOW + 3600)},
+                        {'source_as_of': exporter.iso(NOW - 23.5 * 3600)},
+                        {'checked_at': '2026-10-08T12:00:00'},
+                        {'source_as_of': None}):
+            with self.subTest(changes=changes):
+                self.assertEqual(self.vix(self.vix_receipt(**changes))['status'], 'unverified')
+
+    def test_vix_short_source_freshness_window_can_reduce_receipt_lifetime(self):
+        result = self.vix(self.vix_receipt(source_as_of=exporter.iso(NOW - 86300),
+                                          expires_at=exporter.iso(NOW + 99)))
+        self.assertEqual(result['status'], 'pass')
+
+    def test_vix_schema_types_scope_source_and_code_combinations_fail_closed(self):
+        for changes in ({'version': True}, {'version': 2}, {'ttl_seconds': True},
+                        {'ttl_seconds': 3601}, {'ttl_seconds': 0}, {'ttl_seconds': '3600'},
+                        {'scope': 'entire_morning'}, {'asset_code': 'SPX'},
+                        {'source_id': 'yahoo_finance'}, {'source_id': 'source_unknown'},
+                        {'status': []}, {'code': {}}, {'status': 'pass', 'code': 'vix_source_fetch_failed'},
+                        {'status': 'fail', 'code': 'vix_source_valid'}, {'source_as_of': []},
+                        {'secret': SECRET}):
+            with self.subTest(changes=changes):
+                result = self.vix(self.vix_receipt(**changes))
+                self.assertEqual(result['status'], 'unverified')
+                self.assertNotIn(SECRET, json.dumps(result))
+        self.assertEqual(self.vix([])['status'], 'unverified')
+
+    def test_vix_implementation_change_missing_hash_and_wrong_hash_type_invalidate_evidence(self):
+        wrong = {**self.VIX_HASHES, 'collector_sha256': 'a' * 64}
+        for bindings in ({}, {'collector_sha256': self.VIX_HASHES['collector_sha256']},
+                         {**self.VIX_HASHES, 'validator_sha256': []}, wrong,
+                         {**self.VIX_HASHES, 'validator_sha256': 'bad'},
+                         {**self.VIX_HASHES, 'private_path': SECRET}):
+            with self.subTest(bindings=bindings):
+                self.assertEqual(self.vix(self.vix_receipt(implementation=bindings))['status'], 'unverified')
+        self.assertEqual(self.vix(current=wrong)['status'], 'unverified')
+
+    def test_vix_fetch_failure_is_a_valid_fail_without_claiming_unknown_source_healthy(self):
+        result = self.vix(self.vix_receipt(status='fail', code='vix_source_fetch_failed',
+                                         source_id='source_unknown', source_as_of=None))
+        self.assertEqual(result['status'], 'fail')
+        self.assertEqual(result['code'], 'vix_source_fetch_failed')
+        unknown = self.vix(self.vix_receipt(status='fail', code='vix_source_quality_failed',
+                                          source_id='source_unknown'))
+        self.assertEqual(unknown['status'], 'unverified')
+        self.assertEqual(unknown['code'], 'vix_source_unverified')
+
+    def test_vix_probe_error_and_unknown_source_are_unverified(self):
+        for changes in ({'status': 'error', 'code': 'vix_source_probe_error'},
+                        {'status': 'error', 'code': 'vix_source_implementation_changed'},
+                        {'status': 'unverified', 'code': 'vix_source_unverified', 'source_id': 'source_unknown'}):
+            with self.subTest(changes=changes):
+                self.assertEqual(self.vix(self.vix_receipt(**changes))['status'], 'unverified')
+
+    def test_missing_unreadable_duplicate_or_malformed_receipt_is_unverified(self):
+        for method in (exporter.vix_source_validation, exporter.pi_controlled_validation):
+            for raw in ('not-json', '[1,2]', '{"version":1,"version":1}'):
+                with self.subTest(method=method.__name__, raw=raw), \
+                     mock.patch.object(exporter, 'small_read', return_value=raw):
+                    self.assertEqual(method(NOW)['status'], 'unverified')
+            with mock.patch.object(exporter, 'small_read', side_effect=OSError('private location ' + SECRET)):
+                result = method(NOW)
+            self.assertEqual(result['status'], 'unverified')
+            self.assertNotIn(SECRET, json.dumps(result))
+
+    def test_receipt_read_requires_root_ownership_no_group_other_write_and_bound_size(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'receipt.json'
+            source.write_text('{}')
+            for owner, mode, accepted in ((0, 0o640, True), (0, 0o600, True),
+                                           (1000, 0o640, False), (0, 0o660, False),
+                                           (0, 0o646, False)):
+                with self.subTest(owner=owner, mode=mode), \
+                     mock.patch.object(exporter.os, 'fstat', return_value=types.SimpleNamespace(
+                         st_mode=stat.S_IFREG | mode, st_uid=owner, st_size=2)):
+                    if accepted:
+                        self.assertEqual(exporter.small_read(source, maximum=16384, root_owned=True), '{}')
+                    else:
+                        with self.assertRaises(ValueError):
+                            exporter.small_read(source, maximum=16384, root_owned=True)
+            linked = Path(directory) / 'linked.json'
+            linked.symlink_to(source)
+            with self.assertRaises(OSError):
+                exporter.small_read(linked, maximum=16384, root_owned=True)
+            with mock.patch.object(exporter.os, 'fstat', return_value=types.SimpleNamespace(
+                    st_mode=stat.S_IFREG | 0o640, st_uid=0, st_size=16385)):
+                with self.assertRaises(ValueError):
+                    exporter.small_read(source, maximum=16384, root_owned=True)
+
+    def test_current_implementation_reads_only_fixed_root_owned_source_files(self):
+        with mock.patch.object(exporter, 'small_read', return_value='known implementation') as read:
+            result = exporter.current_implementation(exporter.PI_IMPLEMENTATION_FILES)
+        self.assertEqual(result, dict.fromkeys(self.PI_HASHES, hashlib.sha256(b'known implementation').hexdigest()))
+        self.assertEqual([call.args[0] for call in read.call_args_list], list(exporter.PI_IMPLEMENTATION_FILES.values()))
+        for call in read.call_args_list:
+            self.assertEqual(call.kwargs, {'maximum': 1024 * 1024, 'root_owned': True})
+
+    def test_pi_fresh_pass_is_bounded_and_redacts_implementation_and_authentication_metadata(self):
+        result = self.pi()
+        self.assertEqual(result['status'], 'pass')
+        self.assertEqual(result['scope'], 'pi_research_completion')
+        self.assertEqual(result['model'], 'xai/grok-4.6')
+        self.assertEqual(result['checked_at'], CHECKED)
+        self.assertEqual(result['expires_at'], exporter.iso(NOW + 3500))
+        encoded = json.dumps(result)
+        for private in ('binding_auth', 'inode', 'mtime_ns', 'implementation',
+                        'broker_sha256', 'research_sha256', 'client_sha256', '/opt/',
+                        *self.PI_HASHES.values(), str(self.AUTH_METADATA['inode'])):
+            self.assertNotIn(private, encoded)
+
+    def test_pi_failures_and_internal_errors_have_fixed_status_code_labels(self):
+        for code in ('auth_required', 'timeout', 'rate_limited', 'quota_exceeded',
+                     'upstream_error', 'invalid_response'):
+            with self.subTest(code=code):
+                result = self.pi(self.pi_receipt(status='fail', code=code))
+                self.assertEqual(result['status'], 'fail')
+                self.assertEqual(result['label'], exporter.PI_PROBE_LABELS[code])
+        for code in ('probe_error', 'busy'):
+            with self.subTest(code=code):
+                result = self.pi(self.pi_receipt(status='error', code=code))
+                self.assertEqual(result['status'], 'unverified')
+
+    def test_pi_expired_future_and_extended_receipts_are_unverified(self):
+        for changes in ({'checked_at': exporter.iso(NOW + 61)}, {'expires_at': exporter.iso(NOW)},
+                        {'expires_at': CHECKED}, {'expires_at': exporter.iso(NOW + 3600)},
+                        {'checked_at': '2026-10-08T12:00:00'}, {'ttl_seconds': 0},
+                        {'ttl_seconds': 3601}, {'ttl_seconds': True}, {'ttl_seconds': '3600'}):
+            with self.subTest(changes=changes):
+                self.assertEqual(self.pi(self.pi_receipt(**changes))['status'], 'unverified')
+
+    def test_pi_schema_model_scope_and_code_status_mismatch_are_unverified(self):
+        for changes in ({'version': True}, {'version': 2}, {'scope': 'pi_entire_business'},
+                        {'model': 'another_model'}, {'status': []}, {'code': {}},
+                        {'code': SECRET}, {'status': 'pass', 'code': 'auth_required'},
+                        {'status': 'fail', 'code': 'pi_probe_valid'},
+                        {'status': 'error', 'code': 'auth_required'}, {'private_value': SECRET}):
+            with self.subTest(changes=changes):
+                result = self.pi(self.pi_receipt(**changes))
+                self.assertEqual(result['status'], 'unverified')
+                self.assertNotIn(SECRET, json.dumps(result))
+
+    def test_pi_changed_implementation_and_authentication_make_prior_pass_unverified(self):
+        changed = {**self.PI_HASHES, 'research_sha256': 'a' * 64}
+        self.assertEqual(self.pi(current=changed)['status'], 'unverified')
+        for field in self.AUTH_METADATA:
+            with self.subTest(field=field):
+                changed = {**self.AUTH_METADATA, field: self.AUTH_METADATA[field] + 1}
+                self.assertEqual(self.pi(authentication=changed)['status'], 'unverified')
+
+    def test_pi_invalid_private_bindings_fail_closed(self):
+        for changes in ({'implementation': {}}, {'implementation': {**self.PI_HASHES, 'client_sha256': []}},
+                        {'binding_auth': {}}, {'binding_auth': {**self.AUTH_METADATA, 'inode': True}},
+                        {'binding_auth': {**self.AUTH_METADATA, 'mtime_ns': 'private'}},
+                        {'binding_auth': {**self.AUTH_METADATA, 'size': -1}},
+                        {'binding_auth': {**self.AUTH_METADATA, 'inode': 0}}):
+            with self.subTest(changes=changes):
+                self.assertEqual(self.pi(self.pi_receipt(**changes))['status'], 'unverified')
+
+    def test_pi_authentication_binding_is_metadata_only_and_rejects_symlinks(self):
+        regular = types.SimpleNamespace(st_mode=stat.S_IFREG | 0o600,
+                                        st_ino=54321, st_mtime_ns=1800000000000000000, st_size=2345)
+        with mock.patch.object(Path, 'lstat', return_value=regular) as metadata, \
+             mock.patch.object(exporter.os, 'open', side_effect=AssertionError('auth must not be opened')):
+            self.assertEqual(exporter.current_pi_auth_metadata(), self.AUTH_METADATA)
+        metadata.assert_called_once()
+        with mock.patch.object(Path, 'lstat', return_value=types.SimpleNamespace(st_mode=stat.S_IFLNK | 0o777)):
+            with self.assertRaises(ValueError):
+                exporter.current_pi_auth_metadata()
+
+    def collect_with_validation(self, *, pi_status='pass', vix_status='pass'):
+        business = {'version': 1, 'status': 'clear', 'updated_at': CHECKED, 'failure_streak': 0,
+                    'last_success_us': OLD_REQUEST_US, 'watermark_us': OLD_REQUEST_US, 'incident': None}
+        morning = {'status': 'issue', 'updated_at': CHECKED,
+                   'notified_codes': ['morning_data_quality'], 'pending_codes': {}}
+        pi = {'scope': 'pi_research_completion', 'model': 'xai/grok-4.6', 'status': pi_status,
+              'code': 'auth_required' if pi_status == 'fail' else 'pi_probe_valid',
+              'label': exporter.PI_PROBE_LABELS['auth_required'] if pi_status == 'fail' else exporter.PI_PROBE_LABELS['pi_probe_valid'],
+              'checked_at': exporter.iso(NOW - 5), 'expires_at': exporter.iso(NOW + 300)}
+        vix = {'scope': 'vix_source', 'status': vix_status, 'code': 'vix_source_valid',
+               'label': exporter.VIX_PROBE_LABELS['vix_source_valid'], 'checked_at': exporter.iso(NOW - 5),
+               'expires_at': exporter.iso(NOW + 300), 'source_as_of': exporter.iso(NOW - 600)}
+        def load(path):
+            if path.endswith('/pi-requests.json'):
+                return business
+            if path.endswith('/morning.json'):
+                return morning
+            return {'status': 'clear', 'updated_at': CHECKED}
+        with mock.patch.object(exporter, 'load_json', side_effect=load), \
+             mock.patch.object(exporter, 'pi_controlled_validation', return_value=pi), \
+             mock.patch.object(exporter, 'vix_source_validation', return_value=vix):
+            return exporter.collect_checks(NOW), business, morning
+
+    def test_morning_source_pass_does_not_clear_saved_report_issue_or_replace_historical_time(self):
+        checks, _, morning = self.collect_with_validation()
+        row = next(check for check in checks if check['id'] == 'morning')
+        original = exporter.project_check('morning', row['label'], morning, NOW, 27 * 3600)
+        for field in original:
+            self.assertEqual(row[field], original[field])
+        self.assertEqual(row['status'], 'error')
+        self.assertEqual(row['source_validation']['status'], 'pass')
+
+    def test_pi_controlled_pass_never_fabricates_business_sample_success(self):
+        checks, business, _ = self.collect_with_validation(pi_status='pass')
+        row = next(check for check in checks if check['id'] == 'pi_requests')
+        original = exporter.project_check('pi_requests', row['label'], business, NOW, 1500)
+        for field in original:
+            self.assertEqual(row[field], original[field])
+        self.assertEqual(row['status'], 'unknown')
+        self.assertEqual(row['sample_status'], 'idle')
+        self.assertEqual(row['controlled_validation']['status'], 'pass')
+
+    def test_pi_controlled_fail_raises_error_with_fixed_label_and_preserves_business_evidence(self):
+        checks, business, _ = self.collect_with_validation(pi_status='fail')
+        row = next(check for check in checks if check['id'] == 'pi_requests')
+        original = exporter.project_check('pi_requests', row['label'], business, NOW, 1500)
+        self.assertEqual(row['status'], 'error')
+        self.assertEqual(row['issues'], original['issues'] + [exporter.PI_PROBE_LABELS['auth_required']])
+        for field in ('checked_at', 'sample_status', 'last_success_at', 'last_result_at', 'sample_window_seconds'):
+            self.assertEqual(row[field], original[field])
+        self.assertEqual(business['watermark_us'], OLD_REQUEST_US)
+        self.assertEqual(business['failure_streak'], 0)
 
 
 if __name__ == "__main__":

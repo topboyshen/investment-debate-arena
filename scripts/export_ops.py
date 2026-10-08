@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import grp
+import hashlib
 import ipaddress
 import json
 import math
@@ -44,6 +45,35 @@ CHECKS = (
 # The pi collector queries the preceding 24 hours of completed requests. Its
 # own updated_at is a collection timestamp, not a fresh business success.
 PI_SAMPLE_WINDOW_SECONDS = 24 * 3600
+VIX_PROBE_RECEIPT = Path('/var/lib/business-health-monitor/vix-source-probe.json')
+VIX_IMPLEMENTATION_FILES = {
+    'collector_sha256': Path('/opt/mini-hermes/app/mini_hermes/overseas_market.py'),
+    'validator_sha256': Path('/opt/mini-hermes/app/mini_hermes/reporting.py'),
+}
+VIX_PROBE_LABELS = {
+    'vix_source_valid': 'VIX 来源受控实测通过',
+    'vix_source_fetch_failed': 'VIX 来源采集失败',
+    'vix_source_quality_failed': 'VIX 来源未通过数值或时效校验',
+    'vix_source_unverified': 'VIX 来源当前未验证',
+}
+PI_PROBE_RECEIPT = Path('/var/lib/business-health-monitor/pi-source-probe.json')
+PI_IMPLEMENTATION_FILES = {
+    'broker_sha256': Path('/opt/mini-hermes/app/mini_hermes/pi_channel/broker.py'),
+    'research_sha256': Path('/opt/mini-hermes/app/mini_hermes/pi_channel/research_completion.mjs'),
+    'client_sha256': Path('/opt/mini-hermes/app/mini_hermes/pi_channel/client.py'),
+}
+PI_AUTH_METADATA_PATH = Path('/var/lib/mini-hermes-pi/agent/auth.json')
+PI_PROBE_LABELS = {
+    'pi_probe_valid': 'pi 研究请求受控实测完成',
+    'auth_required': 'pi 受控实测需要重新授权',
+    'timeout': 'pi 受控实测超时',
+    'rate_limited': 'pi 受控实测受到速率限制',
+    'quota_exceeded': 'pi 受控实测额度不足',
+    'upstream_error': 'pi 受控实测上游失败',
+    'invalid_response': 'pi 受控实测响应无法核验',
+    'probe_error': 'pi 受控实测当前未验证',
+    'busy': 'pi 受控实测繁忙，未确认完成',
+}
 ISSUE_LABELS = {
     'arena_business_failures': '辩论场连续出现服务端错误',
     'arena_business_error_rate': '辩论场业务错误率偏高',
@@ -77,12 +107,14 @@ def epoch(value):
         return None
 
 
-def small_read(path, maximum=131072):
+def small_read(path, maximum=131072, *, root_owned=False):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_size > maximum:
             raise ValueError('invalid source')
+        if root_owned and (info.st_uid != 0 or stat.S_IMODE(info.st_mode) & 0o022):
+            raise ValueError('untrusted source')
         with os.fdopen(fd, 'rb', closefd=False) as stream:
             data = stream.read(maximum + 1)
         if len(data) > maximum:
@@ -98,6 +130,134 @@ def load_json(path):
         return value if isinstance(value, dict) else {}
     except (OSError, ValueError, UnicodeError):
         return {}
+
+
+def unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('duplicate field')
+        result[key] = value
+    return result
+
+
+def current_implementation(paths):
+    # Fixed implementation paths only. A receipt cannot choose which files
+    # are read, and neither hashes nor source paths enter public JSON.
+    return {key: hashlib.sha256(small_read(path, maximum=1024 * 1024, root_owned=True).encode('utf-8')).hexdigest()
+            for key, path in paths.items()}
+
+
+def current_vix_implementation():
+    return current_implementation(VIX_IMPLEMENTATION_FILES)
+
+
+def vix_source_validation(now):
+    result = {'scope': 'vix_source', 'status': 'unverified',
+              'code': 'vix_source_unverified', 'label': VIX_PROBE_LABELS['vix_source_unverified'],
+              'checked_at': None, 'expires_at': None, 'source_as_of': None}
+    try:
+        data = json.loads(small_read(VIX_PROBE_RECEIPT, maximum=16384, root_owned=True),
+                          object_pairs_hook=unique_json_object)
+        fields = {'version', 'scope', 'asset_code', 'status', 'code', 'source_id', 'source_as_of',
+                  'checked_at', 'expires_at', 'ttl_seconds', 'implementation'}
+        if (not isinstance(data, dict) or set(data) != fields
+                or type(data['version']) is not int or data['version'] != 1
+                or data['scope'] != 'vix_source' or data['asset_code'] != 'VIX'
+                or not all(isinstance(data[key], str) for key in ('status', 'code', 'source_id'))
+                or data['status'] not in {'pass', 'fail', 'error', 'unverified'}
+                or data['source_id'] not in {'cboe', 'source_unknown'}
+                or type(data['ttl_seconds']) is not int or not 1 <= data['ttl_seconds'] <= 3600):
+            return result
+        status_codes = {'pass': {'vix_source_valid'},
+                        'fail': {'vix_source_fetch_failed', 'vix_source_quality_failed'},
+                        'error': {'vix_source_probe_error', 'vix_source_implementation_changed'},
+                        'unverified': {'vix_source_unverified'}}
+        if data['code'] not in status_codes[data['status']]:
+            return result
+        checked, expires = epoch(data['checked_at']), epoch(data['expires_at'])
+        source = epoch(data['source_as_of']) if data['source_as_of'] is not None else None
+        if (checked is None or expires is None or checked > now + 60
+                or not checked < expires <= checked + data['ttl_seconds']
+                or expires <= now
+                or (data['source_as_of'] is not None and (source is None or source > now + 60))):
+            return result
+        bindings = data['implementation']
+        if (not isinstance(bindings, dict) or set(bindings) != set(VIX_IMPLEMENTATION_FILES)
+                or not all(isinstance(value, str) and re.fullmatch(r'[0-9a-f]{64}', value)
+                           for value in bindings.values())
+                or bindings != current_vix_implementation()):
+            return result
+        if (data['status'] == 'pass' and (data['source_id'] != 'cboe' or source is None
+                or source > checked + 60 or expires > source + 24 * 3600)):
+            return result
+        # Accepted collector errors are still unverified observations. Any
+        # successful source check applies only to VIX, never to the saved report.
+        projected_status = data['status'] if data['status'] in {'pass', 'fail'} else 'unverified'
+        if data['source_id'] != 'cboe' and not (data['status'] == 'fail' and data['code'] == 'vix_source_fetch_failed'):
+            projected_status = 'unverified'
+        code = data['code'] if data['code'] in VIX_PROBE_LABELS else 'vix_source_unverified'
+        if projected_status == 'unverified':
+            code = 'vix_source_unverified'
+        result.update(status=projected_status, code=code, label=VIX_PROBE_LABELS[code],
+                      checked_at=iso(checked), expires_at=iso(expires),
+                      source_as_of=iso(source) if source is not None else None)
+        return result
+    except (OSError, ValueError, TypeError, UnicodeError, OverflowError):
+        return result
+
+
+def current_pi_auth_metadata():
+    # Metadata binding only: never open, read, hash or publish authentication.
+    info = PI_AUTH_METADATA_PATH.lstat()
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError('invalid authentication metadata')
+    return {'inode': info.st_ino, 'mtime_ns': info.st_mtime_ns, 'size': info.st_size}
+
+
+def pi_controlled_validation(now):
+    result = {'scope': 'pi_research_completion', 'model': 'xai/grok-4.6', 'status': 'unverified',
+              'code': 'probe_error', 'label': PI_PROBE_LABELS['probe_error'],
+              'checked_at': None, 'expires_at': None}
+    try:
+        data = json.loads(small_read(PI_PROBE_RECEIPT, maximum=16384, root_owned=True),
+                          object_pairs_hook=unique_json_object)
+        fields = {'version', 'scope', 'model', 'status', 'code', 'checked_at', 'expires_at',
+                  'ttl_seconds', 'implementation', 'binding_auth'}
+        if (not isinstance(data, dict) or set(data) != fields
+                or type(data['version']) is not int or data['version'] != 1
+                or data['scope'] != 'pi_research_completion' or data['model'] != 'xai/grok-4.6'
+                or not all(isinstance(data[key], str) for key in ('status', 'code'))
+                or data['status'] not in {'pass', 'fail', 'error'}
+                or type(data['ttl_seconds']) is not int or not 1 <= data['ttl_seconds'] <= 3600):
+            return result
+        status_codes = {'pass': {'pi_probe_valid'},
+                        'fail': {'auth_required', 'timeout', 'rate_limited', 'quota_exceeded',
+                                 'upstream_error', 'invalid_response'},
+                        'error': {'probe_error', 'busy'}}
+        if data['code'] not in status_codes[data['status']]:
+            return result
+        checked, expires = epoch(data['checked_at']), epoch(data['expires_at'])
+        if (checked is None or expires is None or checked > now + 60
+                or not checked < expires <= checked + data['ttl_seconds'] or expires <= now):
+            return result
+        bindings = data['implementation']
+        if (not isinstance(bindings, dict) or set(bindings) != set(PI_IMPLEMENTATION_FILES)
+                or not all(isinstance(value, str) and re.fullmatch(r'[0-9a-f]{64}', value)
+                           for value in bindings.values())
+                or bindings != current_implementation(PI_IMPLEMENTATION_FILES)):
+            return result
+        authentication = data['binding_auth']
+        if (not isinstance(authentication, dict) or set(authentication) != {'inode', 'mtime_ns', 'size'}
+                or not all(type(value) is int and 0 <= value < 2**63 for value in authentication.values())
+                or authentication['inode'] == 0 or authentication != current_pi_auth_metadata()):
+            return result
+        result.update(status=data['status'] if data['status'] in {'pass', 'fail'} else 'unverified',
+                      code=data['code'], label=PI_PROBE_LABELS[data['code']],
+                      checked_at=iso(checked), expires_at=iso(expires))
+        return result
+    except (OSError, ValueError, TypeError, UnicodeError, OverflowError):
+        return result
 
 
 def command(args):
@@ -227,8 +387,18 @@ def project_check(key, label, data, now, max_age):
 
 def collect_checks(now):
     cadence = {'runtime': 900, 'pi_requests': 900, 'subscriptions': 1800, 'config_drift': 1800, 'morning': 86400}
-    return [{**project_check(key, label, load_json(path), now, age), 'source_interval_seconds': cadence[key]}
-            for key, label, path, age in CHECKS]
+    checks = [{**project_check(key, label, load_json(path), now, age), 'source_interval_seconds': cadence[key]}
+              for key, label, path, age in CHECKS]
+    for check in checks:
+        if check['id'] == 'morning':
+            check['source_validation'] = vix_source_validation(now)
+        elif check['id'] == 'pi_requests':
+            controlled = pi_controlled_validation(now)
+            check['controlled_validation'] = controlled
+            if controlled['status'] == 'fail':
+                check['status'] = 'error'
+                check['issues'] = [*check['issues'], controlled['label']]
+    return checks
 
 
 def cpu_ticks(raw):
