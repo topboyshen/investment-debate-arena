@@ -126,6 +126,48 @@ class OpsExportTests(unittest.TestCase):
             with self.subTest(data=data):
                 self.assertEqual(self.check(data)["status"], expected)
 
+    def test_notified_morning_issue_remains_visible_without_pending_codes(self):
+        data = {"status": "issue", "updated_at": CHECKED, "pending_codes": {},
+                "notified_codes": ["morning_data_quality"], "uncertain_codes": [],
+                "notification_attempts": [{"status": "confirmed", "codes": [SECRET],
+                                            "message": SECRET}], "details": [SECRET]}
+        result = self.check(data, key="morning")
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["issues"], [exporter.ISSUE_LABELS["morning_data_quality"]])
+        self.assertNotIn(SECRET, json.dumps(result))
+
+    def test_current_notification_codes_are_deduplicated_and_private_values_redacted(self):
+        data = {"status": "pending", "updated_at": CHECKED,
+                "pending_codes": {"arena_business_failures": 1},
+                "notified_codes": ["arena_business_failures", SECRET],
+                "uncertain_codes": ["subscription_mihomo_unreachable", SECRET],
+                "notification_attempts": [{"status": "unknown", "codes": ["old_issue"],
+                                            "message": "https://private.example/" + SECRET}]}
+        result = self.check(data)
+        self.assertEqual(result["status"], "warning")
+        self.assertEqual(result["issues"], [exporter.ISSUE_LABELS["arena_business_failures"],
+                                           '检测到一项异常（详见私有告警）',
+                                           exporter.ISSUE_LABELS["subscription_mihomo_unreachable"]])
+        self.assertNotIn(SECRET, json.dumps(result))
+        self.assertNotIn("private.example", json.dumps(result))
+
+    def test_recovered_check_does_not_resurrect_notification_history(self):
+        data = {"status": "clear", "updated_at": CHECKED, "pending_codes": {},
+                "notified_codes": ["morning_data_quality"],
+                "uncertain_codes": ["arena_business_failures"],
+                "notification_attempts": [{"status": "confirmed",
+                                            "codes": ["morning_data_quality"]}]}
+        result = self.check(data)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["issues"], [])
+
+    def test_malformed_notification_code_lists_do_not_leak_or_raise(self):
+        data = {"status": "issue", "updated_at": CHECKED, "pending_codes": {},
+                "notified_codes": SECRET, "uncertain_codes": [None, {}, 1, "morning_data_quality"]}
+        result = self.check(data)
+        self.assertEqual(result["issues"], [exporter.ISSUE_LABELS["morning_data_quality"]])
+        self.assertNotIn(SECRET, json.dumps(result))
+
     def test_drift_pending_count_overrides_previous_clear_state(self):
         result = self.check({"last_status": "clear", "updated_at": CHECKED,
                              "pending_count": 1, "pending_details": [SECRET]}, key="config_drift")

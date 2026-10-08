@@ -47,6 +47,7 @@ PI_SAMPLE_WINDOW_SECONDS = 24 * 3600
 ISSUE_LABELS = {
     'arena_business_failures': '辩论场连续出现服务端错误',
     'arena_business_error_rate': '辩论场业务错误率偏高',
+    'morning_data_quality': '海外晨报数据缺失或未通过时效校验',
     'subscription_mihomo_unverified': 'mihomo 节点尚未验证',
     'subscription_mihomo_unreachable': 'mihomo 节点 TCP 不可达',
 }
@@ -194,9 +195,19 @@ def project_check(key, label, data, now, max_age):
             status, issues = 'unknown', [f'近 {PI_SAMPLE_WINDOW_SECONDS // 3600} 小时无已完成请求样本；当前可用性未验证']
         else:
             status, issues = 'unknown', ['尚无已完成的 pi 请求证据']
-    codes = data.get('pending_codes', {})
-    if isinstance(codes, dict) and codes:
-        issues = [ISSUE_LABELS.get(code, '检测到一项异常（详见私有告警）') for code in list(codes)[:20]]
+    pending = data.get('pending_codes', {})
+    codes = [code for code in pending if isinstance(code, str)] if isinstance(pending, dict) else []
+    # The collector removes recovered codes from these current-state lists.
+    # Once an issue has been notified, pending_codes is empty while the issue
+    # remains active. Never infer current issues from retained attempt history.
+    if state in {'pending', 'issue'}:
+        for field in ('notified_codes', 'uncertain_codes'):
+            values = data.get(field)
+            if isinstance(values, list):
+                codes.extend(code for code in values if isinstance(code, str))
+    codes = list(dict.fromkeys(codes))
+    if codes:
+        issues = [ISSUE_LABELS.get(code, '检测到一项异常（详见私有告警）') for code in codes[:20]]
         if status == 'ok':
             status = 'warning'
     if key == 'config_drift' and status != 'error' and (number(data.get('pending_count')) or 0) > 0:

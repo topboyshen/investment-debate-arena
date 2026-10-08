@@ -145,6 +145,21 @@ class HomeSummaryTests(unittest.TestCase):
         self.assertIn("不保证当日有新报告", rendered["elements"]["reports-meta"]["text"])
         self.assertNotIn("已发送", rendered["elements"]["report-overseas"]["text"])
 
+    def test_home_explains_active_morning_issue_and_pi_idle_without_hiding_them(self):
+        data = self.ops_fixture()
+        next(row for row in data["checks"] if row["id"] == "morning").update(
+            status="error", issues=["海外晨报数据缺失或未通过时效校验"])
+        next(row for row in data["checks"] if row["id"] == "pi_requests").update(
+            status="unknown", sample_status="idle",
+            issues=["近 24 小时无已完成请求样本；当前可用性未验证"])
+        result = self.execute(mode="browser", reports=self.reports_fixture(), ops=data)
+        reasons = result["elements"]["ops-reasons"]["text"]
+        self.assertIn("海外晨报：海外晨报数据缺失", reasons)
+        self.assertIn("pi 请求：近 24 小时无已完成请求样本", reasons)
+        self.assertIn("1 项巡检需关注", result["elements"]["ops-count"]["text"])
+        self.assertIn("1 项状态未知", result["elements"]["ops-count"]["text"])
+        self.assertEqual(result["elements"]["ops-status"]["className"], "status warning")
+
     def test_missing_duplicate_and_malformed_sources_are_not_ready(self):
         fixtures = []
         for rows in ([], None, {}, [self.reports_fixture()["sources"][0]],

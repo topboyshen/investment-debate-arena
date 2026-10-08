@@ -26,7 +26,7 @@ HOME_PAGE = r'''<!doctype html>
 <div class="info-box"><p class="status" id="assistant-status" role="status">服务状态尚未读取</p><p class="data-meta" id="assistant-meta">进程运行不等于消息收发成功。</p></div><p class="data-meta">仅跳转机器人；原有使用权限不变，网页不执行工具。</p>
 <div class="card-actions"><a class="primary-link" href="https://t.me/lucyjie_clawdbot" target="_blank" rel="noopener noreferrer">在 Telegram 打开助手 <span aria-hidden="true">↗</span></a><div class="sub-links"><a href="/ops/">查看助手服务详情</a></div></div></article>
 <article class="card" id="ops-card"><div class="card-head"><span class="icon" aria-hidden="true">⌘</span><span class="access">公开只读</span></div><h2>系统与网络状态</h2><p class="description">dedirock-infra 巡检、sing-box / MTG、主机资源与服务状态。</p>
-<div class="info-box"><p class="status" id="ops-status" role="status">正在读取运行快照…</p><p class="data-meta" id="ops-count">仅统计已纳入监测的服务与巡检。</p><p class="data-meta" id="ops-meta">快照尚未读取；未知不等于正常。</p></div>
+<div class="info-box"><p class="status" id="ops-status" role="status">正在读取运行快照…</p><p class="data-meta" id="ops-count">仅统计已纳入监测的服务与巡检。</p><p class="data-meta" id="ops-reasons"></p><p class="data-meta" id="ops-meta">快照尚未读取；未知不等于正常。</p></div>
 <div class="card-actions"><a class="primary-link" href="/ops/">查看详细数据与状态 <span aria-hidden="true">↗</span></a><div class="sub-links"><a href="/netdata/">Netdata 深度监控</a></div><p class="scope-note">Netdata 若显示欢迎页，可选择底部的匿名使用。</p></div></article>
 <article class="card" id="arena-card"><div class="card-head"><span class="icon" aria-hidden="true">◈</span><span class="access">原型演示</span></div><h2>投研辩论场</h2><p class="description">围绕一个观点，查看多角色论证、反证与主审归纳。</p><div class="info-box"><p class="status">演示资料，不是实时投研结果</p><p class="data-meta">当前提供示例证据包；不读取真实持仓，不执行交易。</p></div>
 <div class="card-actions"><a class="primary-link" href="/arena/">打开辩论场演示 <span aria-hidden="true">↗</span></a></div></article>
@@ -37,6 +37,7 @@ HOME_PAGE = r'''<!doctype html>
 'use strict';
 const REQUIRED_SERVICES=['sing-box','mtg','cloudflared','nginx','netdata','fail2ban','ssh','mini-hermes','mini-hermes-pi','signal-gate','signal-gate-review','investment-debate-arena'];
 const CHECK_AGES={runtime:1500,pi_requests:1500,subscriptions:2700,config_drift:2700,morning:97200};
+const CHECK_NAMES={runtime:'业务健康',pi_requests:'pi 请求',subscriptions:'订阅健康',config_drift:'配置一致性',morning:'海外晨报'};
 function record(value){return value!==null&&typeof value==='object'&&!Array.isArray(value);}
 function stamp(value){if(typeof value!=='string'||value.length>64)return null;const match=/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);if(!match||Number(match[2])>23||Number(match[3])>59||Number(match[4])>59)return null;const day=Date.parse(match[1]+'T00:00:00Z');if(!Number.isFinite(day)||new Date(day).toISOString().slice(0,10)!==match[1])return null;const n=Date.parse(value);return Number.isFinite(n)?n:null;}
 function freshness(value,now,maxAge){const n=stamp(value);return n===null||n>now+60000?'unknown':now-n>maxAge*1000?'stale':'fresh';}
@@ -51,12 +52,26 @@ function summarizeReports(payload,now=Date.now()){
  result.state=age==='stale'?'stale':Object.values(result.items).every(row=>row.date&&row.state==='ok')?'ready':Object.values(result.items).some(row=>row.state==='partial')?'partial':'unknown';return result;
 }
 function summarizeOps(payload,now=Date.now()){
- const result={state:'unknown',updatedAt:null,active:0,total:REQUIRED_SERVICES.length,serviceIssues:0,checkIssues:0,unknown:0,assistant:'unknown'};
+ const result={state:'unknown',updatedAt:null,active:0,total:REQUIRED_SERVICES.length,serviceIssues:0,checkIssues:0,unknown:0,assistant:'unknown',reasons:[]};
  if(!record(payload)||payload.schema_version!==1)return result;
  const services=indexed(payload.services,REQUIRED_SERVICES),checks=indexed(payload.checks,Object.keys(CHECK_AGES));if(!services||!checks)return result;
  result.updatedAt=payload.exported_at;const age=freshness(payload.exported_at,now,180);if(age==='unknown')return result;
  for(const id of REQUIRED_SERVICES){const row=services[id];if(!row||!['active','inactive','failed','activating','deactivating','reloading'].includes(row.active_state)){result.unknown++;continue;}if(row.active_state==='active'&&row.sub_state==='running')result.active++;else if(['dead','failed','exited','start','stop','auto-restart','reload'].includes(row.sub_state))result.serviceIssues++;else result.unknown++;}
- for(const id of Object.keys(CHECK_AGES)){const row=checks[id];if(!row||!Array.isArray(row.issues)||row.issues.some(x=>typeof x!=='string')||!['ok','warning','error','unknown','stale'].includes(row.status)||freshness(row.checked_at,now,CHECK_AGES[id])!=='fresh'){result.unknown++;continue;}if(id==='pi_requests'&&row.status==='ok'&&(row.sample_status!=='recent_success'||!Number.isInteger(row.sample_window_seconds)||row.sample_window_seconds<=0||row.sample_window_seconds>7*86400||freshness(row.last_success_at,now,row.sample_window_seconds)!=='fresh')){result.unknown++;continue;}if(row.status==='unknown'||row.status==='stale')result.unknown++;else if(row.status!=='ok'||row.issues.length)result.checkIssues++;}
+ for(const id of Object.keys(CHECK_AGES)){
+  const row=checks[id],label=CHECK_NAMES[id];
+  if(!row||!Array.isArray(row.issues)||row.issues.some(x=>typeof x!=='string')||!['ok','warning','error','unknown','stale'].includes(row.status)||freshness(row.checked_at,now,CHECK_AGES[id])!=='fresh'){
+   result.unknown++;result.reasons.push(label+'：检查结果待核验');continue;
+  }
+  if(id==='pi_requests'&&row.status==='ok'&&(row.sample_status!=='recent_success'||!Number.isInteger(row.sample_window_seconds)||row.sample_window_seconds<=0||row.sample_window_seconds>7*86400||freshness(row.last_success_at,now,row.sample_window_seconds)!=='fresh')){
+   result.unknown++;result.reasons.push(label+'：近期请求成功未验证');continue;
+  }
+  if(row.status==='unknown'||row.status==='stale')result.unknown++;
+  else if(row.status!=='ok'||row.issues.length)result.checkIssues++;
+  if(row.status!=='ok'||row.issues.length){
+   const detail=row.issues[0];
+   result.reasons.push(label+'：'+(typeof detail==='string'&&detail.length<=240&&!/[<>\u0000-\u001f]/.test(detail)?detail:'检查结果待核验，请查看详情'));
+  }
+ }
  result.state=age==='stale'?'stale':result.serviceIssues||result.checkIssues?'warning':result.unknown?'unknown':'ok';
  const bots=['mini-hermes','mini-hermes-pi'].map(id=>services[id]);result.assistant=age!=='fresh'?age:bots.some(row=>!row||row.active_state==='unknown'||!['active','inactive','failed','activating','deactivating','reloading'].includes(row.active_state))?'unknown':bots.every(row=>row.active_state==='active'&&row.sub_state==='running')?'ok':bots.some(row=>['inactive','failed','activating','deactivating','reloading'].includes(row.active_state))?'warning':'unknown';return result;
 }
@@ -73,6 +88,7 @@ if(typeof document!=='undefined'){
   const opsTone=failed.ops?'unknown':ops.state;
   status('ops-status',failed.ops?'状态读取失败':({ok:'已监测服务与巡检未见异常',warning:'有运行或巡检事项需关注',unknown:'状态未完整确认',stale:'历史快照 · 已超过 3 分钟未更新'})[ops.state],opsTone);
   el('ops-count').textContent=ops.updatedAt?ops.active+' / '+ops.total+' 项已监测服务运行 · '+ops.serviceIssues+' 项服务异常 · '+ops.checkIssues+' 项巡检需关注'+(ops.unknown?' · '+ops.unknown+' 项状态未知':''):'没有用零异常代替缺失数据。';
+  el('ops-reasons').textContent=failed.ops?'':ops.reasons.slice(0,3).join('；');
   el('ops-meta').textContent='快照 '+clock(ops.updatedAt)+' · 不等于整机全部服务或业务成功。';
   const assistant=failed.ops?'unknown':ops.assistant;
   status('assistant-status',({ok:'Bot 与 pi 进程运行中',warning:'助手服务需关注',unknown:'助手状态尚未确认',stale:'助手状态已过期'})[assistant],assistant);
