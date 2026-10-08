@@ -16,6 +16,7 @@ SPEC.loader.exec_module(pages)
 NODE_RUNNER = r"""
 const fs=require('node:fs'),vm=require('node:vm');
 const input=JSON.parse(fs.readFileSync(0,'utf8'));
+const originalSnapshot=JSON.stringify(input.snapshot);
 const ids={},timers=[],requests=[];let calls=0,now=Date.parse(input.now);
 class Element {
  constructor(tag){this.tag=tag;this.children=[];this._text='';this.className='';this.handlers={};this.attrs={};this.dataset={};this.hidden=false;this.parentNode=null;}
@@ -47,10 +48,11 @@ setTimeout(async()=>{
  try{
   if(input.select_last){const list=ids.list.querySelectorAll('button');if(list.length)list[list.length-1].handlers.click();}
   if(input.fail_second)await ids.refresh.handlers.click();
+  const initialCurrent={text:ids['current-quality-state'].textContent,className:ids['current-quality'].className};
   if(input.advance_ms){now+=input.advance_ms;for(const timer of timers)timer.fn();}
   const elements={};for(const [id,n] of Object.entries(ids))elements[id]={text:n.textContent,className:n.className,hidden:n.hidden};
   const tags=[];function walk(n){tags.push(n.tag);for(const child of n.children)walk(child);}walk(root);
-  process.stdout.write(JSON.stringify({elements,requests,timers:timers.map(t=>t.ms),tags}));
+  process.stdout.write(JSON.stringify({elements,requests,timers:timers.map(t=>t.ms),tags,initialCurrent,snapshotUnchanged:JSON.stringify(input.snapshot)===originalSnapshot}));
  }catch(error){process.stderr.write(error.stack);process.exitCode=1;}
 },25);
 """
@@ -94,6 +96,121 @@ class ReportQualityPageTests(unittest.TestCase):
                                    capture_output=True, text=True, timeout=5)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout)
+
+    def before_generation_fixture(self, now):
+        data = self.fixture()
+        day = now.astimezone(timezone(timedelta(hours=8))).date().isoformat()
+        data["exported_at"] = now.isoformat()
+        data["reports"] = [report for report in data["reports"] if report["id"] == "archive"]
+        quality = data["signal_gate_quality"]
+        quality["report_date"] = day
+        quality["sent_report"] = {"state": "not_recorded", "delivery_status": "unknown",
+                                  "quality_issues": [], "generated_at": None}
+        quality["current_inputs"] = {"state": "issues", "report_date": day,
+                                     "checked_at": (now - timedelta(minutes=1)).isoformat(),
+                                     "quality_issues": ["nng8:missing"]}
+        return data
+
+    def assert_current_issue(self, result):
+        self.assertEqual(result["elements"]["current-quality"]["className"], "quality-card quality-card--error")
+        self.assertEqual(result["elements"]["current-quality-state"]["text"], "当前输入仍有质量问题")
+
+    def test_only_missing_research_waits_before_weekday_generation(self):
+        for time in ("2026-09-21T07:20:00+08:00", "2026-09-21T07:59:00+08:00"):
+            now = datetime.fromisoformat(time)
+            with self.subTest(time=time):
+                result = self.render(self.before_generation_fixture(now), now=time)
+                elements = result["elements"]
+                self.assertEqual(elements["current-quality-state"]["text"], "研究尚未到生成时间")
+                self.assertEqual(elements["current-quality"]["className"], "quality-card quality-card--unknown")
+                self.assertIn("北京时间工作日 08:00 开始生成", elements["current-quality-basis"]["text"])
+                self.assertIn("不代表已生成或发送", elements["current-quality-basis"]["text"])
+                self.assertIn("nng8:missing", elements["current-quality-issues"]["text"])
+                self.assertEqual(elements["sent-quality-state"]["text"], "尚无今天的可核验发送记录")
+                self.assertTrue(result["snapshotUnchanged"])
+
+    def test_missing_research_is_an_issue_from_0800(self):
+        for time in ("2026-09-21T08:00:00+08:00", "2026-09-21T08:15:00+08:00"):
+            now = datetime.fromisoformat(time)
+            with self.subTest(time=time):
+                self.assert_current_issue(self.render(self.before_generation_fixture(now), now=time))
+
+    def test_browser_timer_ends_wait_at_0800_without_new_snapshot(self):
+        now = datetime.fromisoformat("2026-09-21T07:59:30+08:00")
+        result = self.render(self.before_generation_fixture(now), now=now.isoformat(), advance_ms=30000)
+        self.assertEqual(result["initialCurrent"]["text"], "研究尚未到生成时间")
+        self.assert_current_issue(result)
+        self.assertIn("nng8:missing", result["elements"]["current-quality-issues"]["text"])
+        self.assertEqual(len(result["requests"]), 1)
+        self.assertIn(30000, result["timers"])
+        self.assertTrue(result["snapshotUnchanged"])
+
+    def test_generation_wait_does_not_apply_on_weekends(self):
+        for time in ("2026-09-26T07:20:00+08:00", "2026-09-27T07:20:00+08:00"):
+            now = datetime.fromisoformat(time)
+            with self.subTest(time=time):
+                self.assert_current_issue(self.render(self.before_generation_fixture(now), now=time))
+
+    def test_generation_wait_never_hides_other_or_mixed_issues(self):
+        now = datetime.fromisoformat("2026-09-21T07:20:00+08:00")
+        for issues in (["nng8:invalid"], ["jd:missing"], ["nng8:stale"],
+                       ["nng8:missing", "nng8:invalid"], ["nng8:missing", "jd:stale"],
+                       ["nng8:missing", "nng8:missing"]):
+            data = self.before_generation_fixture(now)
+            data["signal_gate_quality"]["current_inputs"]["quality_issues"] = issues
+            with self.subTest(issues=issues):
+                result = self.render(data, now=now.isoformat())
+                self.assert_current_issue(result)
+                for issue in issues:
+                    self.assertIn(issue, result["elements"]["current-quality-issues"]["text"])
+
+    def test_generation_wait_requires_fresh_valid_current_snapshot(self):
+        now = datetime.fromisoformat("2026-09-21T07:20:00+08:00")
+        cases = [({"state": "unknown"}, "当前校验状态未知"),
+                 ({"state": "stale"}, "当前校验已过期"),
+                 ({"state": "clear"}, "当前校验状态未知"),
+                 ({"checked_at": None}, "当前校验状态未知"),
+                 ({"checked_at": (now - timedelta(minutes=16)).isoformat()}, "当前校验已过期"),
+                 ({"checked_at": (now + timedelta(seconds=1)).isoformat()}, "当前输入仍有质量问题"),
+                 ({"checked_at": (now + timedelta(seconds=61)).isoformat()}, "当前校验状态未知"),
+                 ({"checked_at": "2026-09-20T23:59:00+08:00"}, "当前校验已过期"),
+                 ({"report_date": "2026-09-20"}, "当前校验已过期"),
+                 ({"report_date": "2026-09-22"}, "当前校验状态未知"),
+                 ({"quality_issues": "nng8:missing"}, "当前校验状态未知")]
+        for change, headline in cases:
+            data = self.before_generation_fixture(now)
+            data["signal_gate_quality"]["current_inputs"].update(change)
+            with self.subTest(change=change):
+                result = self.render(data, now=now.isoformat())
+                self.assertEqual(result["elements"]["current-quality-state"]["text"], headline)
+                self.assert_current_not_green(result)
+        for day in ("2026-09-20", "2026-09-22"):
+            data = self.before_generation_fixture(now)
+            data["signal_gate_quality"]["report_date"] = day
+            with self.subTest(quality_day=day):
+                result = self.render(data, now=now.isoformat())
+                self.assertNotEqual(result["elements"]["current-quality-state"]["text"], "研究尚未到生成时间")
+                self.assert_current_not_green(result)
+
+    def test_generation_wait_does_not_hide_confirmed_or_uncertain_sent_records(self):
+        now = datetime.fromisoformat("2026-09-21T07:20:00+08:00")
+        for sent in (None, {},
+                     {"state": "issues", "delivery_status": "confirmed", "quality_issues": ["nng8:missing"],
+                      "generated_at": "2026-09-21T07:10:00+08:00"},
+                     {"state": "clear", "delivery_status": "confirmed", "quality_issues": [],
+                      "generated_at": "2026-09-21T07:10:00+08:00"},
+                     {"state": "unverified", "delivery_status": "unknown", "quality_issues": [], "generated_at": None},
+                     {"state": "not_recorded", "delivery_status": "confirmed", "quality_issues": [], "generated_at": None}):
+            data = self.before_generation_fixture(now)
+            data["signal_gate_quality"]["sent_report"] = sent
+            with self.subTest(sent=sent):
+                result = self.render(data, now=now.isoformat())
+                self.assert_current_issue(result)
+                if sent and sent.get("state") == "issues":
+                    self.assertEqual(result["elements"]["sent-quality-state"]["text"], "已发日报有质量问题")
+        data = self.before_generation_fixture(now)
+        data["reports"].append(self.fixture()["reports"][0])
+        self.assert_current_issue(self.render(data, now=now.isoformat()))
 
     def assert_current_not_green(self, result):
         self.assertNotIn("quality-card--ok", result["elements"]["current-quality"]["className"])

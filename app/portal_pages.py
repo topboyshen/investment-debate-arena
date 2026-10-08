@@ -66,6 +66,10 @@ REPORTS_PAGE = r'''<!doctype html>
   if(!validDate(current.report_date)||!checked||currentIssues===null){putQuality('current-quality','unknown','当前校验状态未知',checkedTime,'校验日期、时间或问题清单不完整，未据此判断正常。');return;}
   if(checked.getTime()>now+60000||current.report_date>today){putQuality('current-quality','unknown','当前校验状态未知',checkedTime,'校验日期或时间位于未来，请核对时钟与采集记录。');return;}
   if(current.report_date!==today||beijingDay(checked.getTime())!==today||now-checked.getTime()>15*60*1000||current.state==='stale'){putQuality('current-quality','stale','当前校验已过期',checkedTime,'校验超过 15 分钟或不是今天；网页导出时间不会刷新校验时间。',currentIssues);return;}
+  const beijingNow=new Date(now+8*60*60*1000);
+  const beforeGeneration=beijingNow.getUTCDay()>=1&&beijingNow.getUTCDay()<=5&&beijingNow.getUTCHours()<8;
+  const noSentToday=object(sent)&&sent.state==='not_recorded'&&sent.delivery_status==='unknown'&&sentIssues!==null&&sentIssues.length===0&&sent.generated_at===null&&!state.reports.some(report=>report.source==='signal_gate'&&report.report_date===today&&report.delivery_status==='confirmed');
+  if(beforeGeneration&&noSentToday&&checked.getTime()<=now&&current.state==='issues'&&currentIssues.length===1&&currentIssues[0]==='nng8:missing'){putQuality('current-quality','unknown','研究尚未到生成时间',checkedTime,'nnG8 按北京时间工作日 08:00 开始生成，正在等待今日研究。这里只说明计划时点，不代表已生成或发送。',currentIssues);return;}
   if(current.state==='clear'&&currentIssues.length===0)putQuality('current-quality','ok','当前校验未发现问题',checkedTime,'只读校验结果；不改写早晨日报，不表示已补发或研究完整。');
   else if(current.state==='issues'&&currentIssues.length>0)putQuality('current-quality','error','当前输入仍有质量问题',checkedTime,'这是当前校验结果，与早晨已发日报分别记录。',currentIssues);
   else putQuality('current-quality','unknown','当前校验状态未知',checkedTime,'校验状态未确认或前后不一致，未据此判断正常。',currentIssues);
