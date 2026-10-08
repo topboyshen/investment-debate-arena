@@ -156,9 +156,62 @@ class HomeSummaryTests(unittest.TestCase):
         reasons = result["elements"]["ops-reasons"]["text"]
         self.assertIn("海外晨报：海外晨报数据缺失", reasons)
         self.assertIn("pi 请求：近 24 小时无已完成请求样本", reasons)
-        self.assertIn("1 项巡检需关注", result["elements"]["ops-count"]["text"])
-        self.assertIn("1 项状态未知", result["elements"]["ops-count"]["text"])
-        self.assertEqual(result["elements"]["ops-status"]["className"], "status warning")
+        self.assertEqual(result["elements"]["ops-status"]["text"], "已监测服务运行正常")
+        self.assertEqual(result["elements"]["ops-status"]["className"], "status ok")
+        self.assertIn("0 项服务异常", result["elements"]["ops-count"]["text"])
+        self.assertIn("1 项问题 · 1 项未验证", result["elements"]["ops-check-status"]["text"])
+        self.assertEqual(result["elements"]["ops-check-status"]["className"], "status warning")
+
+    def test_service_failure_still_warns_even_with_healthy_checks(self):
+        for change in ({"active_state": "failed", "sub_state": "failed"},
+                       {"active_state": "failed", "sub_state": "running"},
+                       {"active_state": "inactive", "sub_state": "running"}):
+            data = self.ops_fixture()
+            data["services"][0].update(change)
+            with self.subTest(change=change):
+                result = self.execute(mode="browser", reports=self.reports_fixture(), ops=data)
+                self.assertEqual(result["elements"]["ops-status"]["className"], "status warning")
+                self.assertIn("1 项服务异常", result["elements"]["ops-count"]["text"])
+                self.assertEqual(result["elements"]["ops-check-status"]["className"], "status ok")
+
+    def test_missing_service_cannot_claim_running_normally(self):
+        data = self.ops_fixture()
+        data["services"].pop()
+        result = self.execute(mode="browser", reports=self.reports_fixture(), ops=data)
+        self.assertEqual(result["elements"]["ops-status"]["className"], "status unknown")
+        self.assertIn("11 / 12", result["elements"]["ops-count"]["text"])
+        self.assertIn("1 项服务未确认", result["elements"]["ops-count"]["text"])
+
+    def test_invalid_export_time_does_not_display_unchecked_zero_counts(self):
+        data = self.ops_fixture()
+        data["exported_at"] = "bad"
+        result = self.execute(mode="browser", reports=self.reports_fixture(), ops=data)
+        self.assertEqual(result["elements"]["ops-status"]["className"], "status unknown")
+        self.assertEqual(result["elements"]["ops-check-status"]["text"], "巡检与业务验证尚未确认")
+        self.assertNotIn("0 项问题", result["elements"]["ops-check-status"]["text"])
+        self.assertNotIn("0 项服务异常", result["elements"]["ops-count"]["text"])
+
+    def test_missing_check_evidence_stays_visible_without_mislabeling_running_services(self):
+        for rows in (None, [], {}, self.ops_fixture()["checks"] * 2):
+            data = self.ops_fixture()
+            data["checks"] = rows
+            with self.subTest(rows=rows):
+                result = self.execute(mode="browser", reports=self.reports_fixture(), ops=data)
+                self.assertEqual(result["elements"]["ops-status"]["className"], "status ok")
+                self.assertEqual(result["elements"]["ops-check-status"]["className"], "status unknown")
+                self.assertIn("5 项未验证", result["elements"]["ops-check-status"]["text"])
+                for label in ("业务健康", "pi 请求", "订阅健康", "配置一致性", "海外晨报"):
+                    self.assertIn(label, result["elements"]["ops-reasons"]["text"])
+
+    def test_morning_reason_shows_check_time_separately_from_service_snapshot_time(self):
+        data = self.ops_fixture()
+        morning = next(row for row in data["checks"] if row["id"] == "morning")
+        morning.update(status="error", issues=["海外晨报数据缺失或未通过时效校验"],
+                       checked_at=(self.NOW - timedelta(hours=6, minutes=45)).isoformat())
+        result = self.execute(mode="browser", reports=self.reports_fixture(), ops=data)
+        self.assertIn("15:30", result["elements"]["ops-meta"]["text"])
+        self.assertIn("08:45", result["elements"]["ops-reasons"]["text"])
+        self.assertEqual(result["elements"]["ops-status"]["className"], "status ok")
 
     def test_missing_duplicate_and_malformed_sources_are_not_ready(self):
         fixtures = []
@@ -324,6 +377,7 @@ class HomeSummaryTests(unittest.TestCase):
         result = self.browser(advance_ms=181000)
         self.assertEqual(len(result["requests"]), 2)
         self.assertEqual(result["elements"]["ops-status"]["className"], "status stale")
+        self.assertEqual(result["elements"]["ops-check-status"]["className"], "status stale")
         self.assertEqual(result["elements"]["assistant-status"]["className"], "status stale")
         self.assertEqual(result["elements"]["reports-status"]["className"], "status ready")
         result = self.browser(advance_ms=1801000)
@@ -344,6 +398,7 @@ class HomeSummaryTests(unittest.TestCase):
                     else:
                         self.assertEqual(elements["reports-status"]["className"], "status ready")
                         self.assertEqual(elements["assistant-status"]["className"], "status unknown")
+                        self.assertEqual(elements["ops-check-status"]["className"], "status unknown")
 
     def test_failed_refresh_downgrades_only_the_failed_feed(self):
         for endpoint in ("reports", "ops"):
@@ -367,7 +422,8 @@ class HomeSummaryTests(unittest.TestCase):
         self.assertNotIn("script", result["created"])
         # This summary uses fixed labels, not arbitrary upstream display names.
         self.assertNotIn(payload, " ".join(row["text"] for row in result["elements"].values()))
-        self.assertEqual(result["elements"]["ops-status"]["className"], "status warning")
+        self.assertEqual(result["elements"]["ops-status"]["className"], "status ok")
+        self.assertEqual(result["elements"]["ops-check-status"]["className"], "status warning")
         for forbidden in ("innerHTML", "outerHTML", "insertAdjacentHTML", "eval(",
                           "document.write", "Authorization", "localStorage", "method:'POST'"):
             self.assertNotIn(forbidden, SCRIPT)
