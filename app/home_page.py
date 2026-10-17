@@ -96,7 +96,9 @@ function summarizeOps(payload,now=Date.now()){
    result.reasons.push(label+'：'+(typeof detail==='string'&&detail.length<=240&&!/[<>\u0000-\u001f]/.test(detail)?detail:'检查结果待核验，请查看详情')+' · 检查 '+clock(row.checked_at));
   }
  }
- for(const [id,value] of [['morning',result.sourceValidation],['pi_requests',result.controlledValidation]])if(value.state==='warning'&&!countedIssues[id])result.checkIssues++;
+ // The two probe lines below the summary are part of the same detail list:
+ // a failed probe is an issue, an unverified/expired/invalid probe is unverified.
+ for(const [id,value] of [['morning',result.sourceValidation],['pi_requests',result.controlledValidation]]){if(value.state==='warning'){if(!countedIssues[id])result.checkIssues++;}else if(value.state!=='ok')result.checkUnknown++;}
  result.unknown=result.serviceUnknown+result.checkUnknown;
  result.serviceState=age==='stale'?'stale':result.serviceIssues?'warning':result.serviceUnknown?'unknown':'ok';
  result.checkState=age==='stale'?'stale':result.checkIssues?'warning':result.checkUnknown?'unknown':'ok';

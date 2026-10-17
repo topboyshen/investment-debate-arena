@@ -103,19 +103,25 @@ class HomeSummaryTests(unittest.TestCase):
                    "checked_at": self.NOW.isoformat()} for key in CHECK_AGES]
         next(row for row in checks if row["id"] == "pi_requests").update(
             sample_status="recent_success", sample_window_seconds=86400,
-            last_success_at=(self.NOW - timedelta(minutes=1)).isoformat())
+            last_success_at=(self.NOW - timedelta(minutes=1)).isoformat(),
+            controlled_validation=self.probe_fixture("pi_research_completion"))
+        # A complete snapshot carries both probe receipts; without them the two
+        # probe lines read "尚未验证" and must be counted as unverified.
+        next(row for row in checks if row["id"] == "morning").update(
+            source_validation=self.probe_fixture("vix_source"))
         return {"schema_version": 1, "exported_at": self.NOW.isoformat(),
                 "services": [{"id": key, "active_state": "active", "sub_state": "running"}
                              for key in SERVICE_IDS],
                 "checks": checks}
 
-    def probe_fixture(self, scope, status="pass"):
+    def probe_fixture(self, scope, status="pass", now=None):
+        now = now or self.NOW
         value = {"scope": scope, "status": status,
-                 "checked_at": self.NOW.isoformat(),
-                 "expires_at": (self.NOW + timedelta(minutes=30)).isoformat()}
+                 "checked_at": now.isoformat(),
+                 "expires_at": (now + timedelta(minutes=30)).isoformat()}
         if scope == "vix_source":
             value.update(code="vix_source_valid" if status == "pass" else "vix_source_quality_failed",
-                         source_as_of=(self.NOW - timedelta(hours=12)).isoformat())
+                         source_as_of=(now - timedelta(hours=12)).isoformat())
         else:
             value.update(model="xai/grok-4.6", code="pi_probe_valid" if status == "pass" else "auth_required")
         return value
@@ -167,6 +173,7 @@ class HomeSummaryTests(unittest.TestCase):
         data = self.ops_fixture()
         next(row for row in data["checks"] if row["id"] == "morning").update(
             status="error", issues=["海外晨报数据缺失或未通过时效校验"])
+        del next(row for row in data["checks"] if row["id"] == "morning")["source_validation"]
         next(row for row in data["checks"] if row["id"] == "pi_requests").update(
             status="unknown", sample_status="idle",
             issues=["近 24 小时无已完成请求样本；当前可用性未验证"])
@@ -177,8 +184,39 @@ class HomeSummaryTests(unittest.TestCase):
         self.assertEqual(result["elements"]["ops-status"]["text"], "已监测服务运行正常")
         self.assertEqual(result["elements"]["ops-status"]["className"], "status ok")
         self.assertIn("0 项服务异常", result["elements"]["ops-count"]["text"])
-        self.assertIn("1 项问题 · 1 项未验证", result["elements"]["ops-check-status"]["text"])
+        # pi idle sample + the VIX probe line that reads "尚未验证".
+        self.assertIn("VIX 来源复测尚未验证", result["elements"]["ops-source-validation"]["text"])
+        self.assertIn("1 项问题 · 2 项未验证", result["elements"]["ops-check-status"]["text"])
         self.assertEqual(result["elements"]["ops-check-status"]["className"], "status warning")
+
+    def test_unverified_probe_lines_are_counted_in_the_summary(self):
+        # Production shape on 2026-10-17: every check ok, both probe receipts
+        # absent/expired, so the exporter emits status=unverified for both.
+        unverified = {
+            "vix_source": {"scope": "vix_source", "status": "unverified", "code": "vix_source_unverified",
+                           "label": "VIX 来源当前未验证", "checked_at": None, "expires_at": None,
+                           "source_as_of": None},
+            "pi_research_completion": {"scope": "pi_research_completion", "model": "xai/grok-4.6",
+                                       "status": "unverified", "code": "probe_error",
+                                       "label": "pi 受控实测当前未验证", "checked_at": None, "expires_at": None},
+        }
+        cases = ((("vix_source", "pi_research_completion"), 2), (("vix_source",), 1),
+                 (("pi_research_completion",), 1), ((), 0))
+        for scopes, expected in cases:
+            data = self.ops_fixture()
+            for scope in scopes:
+                row = next(r for r in data["checks"] if r["id"] == ("morning" if scope == "vix_source" else "pi_requests"))
+                row["source_validation" if scope == "vix_source" else "controlled_validation"] = unverified[scope]
+            with self.subTest(scopes=scopes):
+                summary = self.summary("summarizeOps", data)
+                self.assertEqual((summary["checkIssues"], summary["checkUnknown"]), (0, expected))
+                elements = self.execute(mode="browser", reports=self.reports_fixture(), ops=data)["elements"]
+                shown = sum("尚未验证" in elements[e]["text"] for e in ("ops-source-validation", "ops-pi-validation"))
+                reasons = [line for line in elements["ops-reasons"]["text"].split("\n") if line]
+                self.assertEqual(shown + len(reasons), expected)
+                self.assertIn(f"0 项问题 · {expected} 项未验证", elements["ops-check-status"]["text"])
+                self.assertEqual(elements["ops-check-status"]["className"],
+                                 "status unknown" if expected else "status ok")
 
     def test_service_failure_still_warns_even_with_healthy_checks(self):
         for change in ({"active_state": "failed", "sub_state": "failed"},
@@ -217,7 +255,8 @@ class HomeSummaryTests(unittest.TestCase):
                 result = self.execute(mode="browser", reports=self.reports_fixture(), ops=data)
                 self.assertEqual(result["elements"]["ops-status"]["className"], "status ok")
                 self.assertEqual(result["elements"]["ops-check-status"]["className"], "status unknown")
-                self.assertIn("5 项未验证", result["elements"]["ops-check-status"]["text"])
+                # 5 missing checks + the 2 probe lines, which are also unverified.
+                self.assertIn("7 项未验证", result["elements"]["ops-check-status"]["text"])
                 for label in ("业务健康", "pi 请求", "订阅健康", "配置一致性", "海外晨报"):
                     self.assertIn(label, result["elements"]["ops-reasons"]["text"])
 
@@ -449,6 +488,11 @@ class HomeSummaryTests(unittest.TestCase):
             for check in data["checks"]:
                 check["checked_at"] = now
             next(check for check in data["checks"] if check["id"] == "pi_requests")["last_success_at"] = now
+            reference = datetime.fromisoformat(now.replace("Z", "+00:00"))
+            next(check for check in data["checks"] if check["id"] == "pi_requests")["controlled_validation"] = \
+                self.probe_fixture("pi_research_completion", now=reference)
+            next(check for check in data["checks"] if check["id"] == "morning")["source_validation"] = \
+                self.probe_fixture("vix_source", now=reference)
             data["checks"][0]["checked_at"] = invalid
             with self.subTest(check_timestamp=invalid):
                 result = self.summary("summarizeOps", data, now=now)
