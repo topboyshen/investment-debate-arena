@@ -198,8 +198,27 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertNotIn("jd:stale\",\"nng8:invalid", body.decode())
 
+    def test_head_matches_get_status_and_headers_without_body(self):
+        for path in ("/", "/arena", "/arena/", "/reports", "/reports/", "/ops", "/ops/",
+                     "/api/demo", "/arena/api/demo", "/healthz", "/readyz", "/favicon.svg",
+                     "/no-such-path", "/reports/data.json", "/ops?x=1"):
+            with self.subTest(path=path):
+                get_status, get_headers, get_body = self.request("GET", path)
+                head_status, head_headers, head_body = self.request("HEAD", path)
+                self.assertEqual(head_status, get_status)
+                self.assertEqual(head_body, b"")
+                get_headers.pop("Date", None)
+                head_headers.pop("Date", None)
+                if path.endswith("api/demo") or path == "/readyz":
+                    # Dynamic payload (generated_at); only the length may differ.
+                    self.assertTrue(int(head_headers.pop("Content-Length")) > 0)
+                    get_headers.pop("Content-Length")
+                else:
+                    self.assertEqual(int(get_headers["Content-Length"]), len(get_body))
+                self.assertEqual(head_headers, get_headers)
+
     def test_canonical_page_redirects(self):
-        for path in ("/arena", "/reports"):
+        for path in ("/arena", "/reports", "/ops"):
             status, headers, body = self.request("GET", path)
             self.assertEqual(status, 308)
             self.assertEqual(headers["Location"], path + "/")

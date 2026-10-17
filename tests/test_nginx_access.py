@@ -22,6 +22,20 @@ class NginxAccessTests(unittest.TestCase):
         self.assertIsNotNone(match, header)
         return match.group(1)
 
+    def test_canonical_redirects_are_absolute_https_without_port(self):
+        # A relative `return 308 /x/;` makes nginx build http://host:18765/x/
+        # from its own Tunnel-only listener; always emit https://$host/... .
+        for path in ("/reports", "/ops", "/netdata"):
+            with self.subTest(path=path):
+                block = self.location("location = " + path)
+                self.assertRegex(block, r"(?m)^\s*return 308 https://\$host" + re.escape(path) + r"/;\s*$")
+        targets = re.findall(r"return 30[1278] (\S+);", self.config)
+        self.assertGreaterEqual(len(targets), 4)
+        for target in targets:
+            with self.subTest(target=target):
+                self.assertTrue(target.startswith("https://$host"), target)
+                self.assertNotRegex(target, r"^https?://[^/]*:[0-9]+")
+
     def test_arena_is_public_but_rate_limited(self):
         arena = self.location("location /")
         self.assertRegex(arena, r"(?m)^\s*auth_basic off;\s*$")

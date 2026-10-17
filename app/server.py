@@ -81,56 +81,50 @@ class Handler(BaseHTTPRequestHandler):
         for name, value in SECURITY_HEADERS.items():
             self.send_header(name, value)
 
-    def _json(self, status: int, payload: dict) -> None:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    def _send(self, status: int, headers: list[tuple[str, str]], body: bytes, *, head_only: bool = False) -> None:
         self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
+        for name, value in headers:
+            self.send_header(name, value)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
         self._security_headers()
         self.end_headers()
-        self.wfile.write(body)
+        if body and not head_only:
+            self.wfile.write(body)
 
-    def do_GET(self) -> None:
-        path = urlparse(self.path).path
+    @staticmethod
+    def _json_response(status: int, payload: dict) -> tuple[int, list[tuple[str, str]], bytes]:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        return status, [("Content-Type", "application/json; charset=utf-8"), ("Cache-Control", "no-store")], body
+
+    def _json(self, status: int, payload: dict) -> None:
+        self._send(*self._json_response(status, payload))
+
+    def _route_get(self, path: str) -> tuple[int, list[tuple[str, str]], bytes]:
+        """Single GET route table; HEAD reuses it and only omits the body."""
         if path == "/favicon.svg":
-            self._favicon()
-            return
+            return HTTPStatus.OK, [("Content-Type", "image/svg+xml"), ("Cache-Control", "public, max-age=3600")], FAVICON_SVG
         if path == "/healthz":
-            self._json(HTTPStatus.OK, {"status": "ok", "service": "investment-debate-arena"})
-            return
+            return self._json_response(HTTPStatus.OK, {"status": "ok", "service": "investment-debate-arena"})
         if path == "/readyz":
             demo = build_debate("AAPL", "检查演示证据包和输出结构是否可用。")
             ready = len(demo["sources"]) == 2 and len(demo["roles"]) == 5
-            self._json(
+            return self._json_response(
                 HTTPStatus.OK if ready else HTTPStatus.SERVICE_UNAVAILABLE,
                 {"status": "ready" if ready else "not_ready", "service": "investment-debate-arena"},
             )
-            return
         if path in {"/api/demo", "/arena/api/demo"}:
-            self._json(HTTPStatus.OK, build_debate("AAPL", "近期收入、服务业务与现金流表现支持经营韧性，但需要检验竞争与产品周期风险。"))
-            return
+            return self._json_response(HTTPStatus.OK, build_debate("AAPL", "近期收入、服务业务与现金流表现支持经营韧性，但需要检验竞争与产品周期风险。"))
         if path in {"/arena", "/reports", "/ops"}:
-            self.send_response(HTTPStatus.PERMANENT_REDIRECT)
-            self.send_header("Location", path + "/")
-            self.send_header("Content-Length", "0")
-            self.send_header("Cache-Control", "no-store")
-            self._security_headers()
-            self.end_headers()
-            return
+            return HTTPStatus.PERMANENT_REDIRECT, [("Location", path + "/"), ("Cache-Control", "no-store")], b""
         if path in {"/", "/arena/", "/reports/", "/ops/"}:
             # The report page is a data-free shell. Only nginx can serve the
             # read-only snapshot; this process never opens source reports/DBs.
             body = {"/": HOME_PAGE, "/arena/": PAGE, "/reports/": REPORTS_PAGE, "/ops/": OPS_PAGE}[path].encode("utf-8")
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self._security_headers()
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+            return HTTPStatus.OK, [("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "no-store")], body
+        return self._json_response(HTTPStatus.NOT_FOUND, {"error": "not found"})
+
+    def do_GET(self) -> None:
+        self._send(*self._route_get(urlparse(self.path).path))
 
     def do_POST(self) -> None:
         if urlparse(self.path).path not in {"/api/debate", "/arena/api/debate"}:
@@ -165,35 +159,8 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError) as exc:
             self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(exc)})
 
-    def _favicon(self, *, head_only: bool = False) -> None:
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "image/svg+xml")
-        self.send_header("Content-Length", str(len(FAVICON_SVG)))
-        self.send_header("Cache-Control", "public, max-age=3600")
-        self._security_headers()
-        self.end_headers()
-        if not head_only:
-            self.wfile.write(FAVICON_SVG)
-
     def do_HEAD(self) -> None:
-        path = urlparse(self.path).path
-        if path == "/favicon.svg":
-            self._favicon(head_only=True)
-            return
-        if path == "/ops":
-            self.send_response(HTTPStatus.PERMANENT_REDIRECT)
-            self.send_header("Location", "/ops/")
-        elif path not in {"/", "/arena/", "/reports/", "/ops/", "/healthz", "/readyz"}:
-            self.send_response(HTTPStatus.NOT_FOUND)
-        else:
-            self.send_response(HTTPStatus.OK)
-        page = {"/": HOME_PAGE, "/arena/": PAGE, "/reports/": REPORTS_PAGE, "/ops/": OPS_PAGE}.get(path)
-        if page is not None:
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(page.encode("utf-8"))) if page is not None else "0")
-        self.send_header("Cache-Control", "no-store")
-        self._security_headers()
-        self.end_headers()
+        self._send(*self._route_get(urlparse(self.path).path), head_only=True)
 
     def do_OPTIONS(self) -> None:
         self.send_response(HTTPStatus.NO_CONTENT)
