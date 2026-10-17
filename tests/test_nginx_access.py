@@ -36,6 +36,56 @@ class NginxAccessTests(unittest.TestCase):
                 self.assertTrue(target.startswith("https://$host"), target)
                 self.assertNotRegex(target, r"^https?://[^/]*:[0-9]+")
 
+    def test_favicon_ico_redirects_to_shared_svg(self):
+        block = self.location("location = /favicon.ico")
+        self.assertRegex(block, r"(?m)^\s*return 308 https://\$host/favicon\.svg\?v=1;\s*$")
+
+    def test_proxied_pages_send_a_single_cache_control(self):
+        for header in ("location ^~ /ops/", "location ^~ /reports/"):
+            with self.subTest(location=header):
+                block = self.location(header)
+                self.assertIn("proxy_hide_header Cache-Control;", block)
+                self.assertEqual(len(re.findall(r"(?m)^\s*add_header Cache-Control ", block)), 1)
+                self.assertIn('add_header Cache-Control "no-store, max-age=0" always;', block)
+
+    def test_arena_log_records_path_only_and_redacts_private_paths(self):
+        fmt = re.search(r"(?s)log_format arena_safe (.*?);\n", self.config).group(1)
+        self.assertIn("uri=$arena_log_uri", fmt)
+        for forbidden in ("$request_uri", "$request ", "$args", "$query_string", "$remote_addr",
+                          "$binary_remote_addr", "$http_", "$realip", "$uri "):
+            self.assertNotIn(forbidden, fmt + " ")
+        body = re.search(r"(?s)map \$uri \$arena_log_uri \{\n(.*?)\n\}", self.config).group(1)
+        rules = []
+        for line in body.splitlines():
+            line = line.strip().rstrip(";")
+            if line.startswith('"~'):
+                pattern, value = line[2:].split('" "', 1)
+                rules.append((re.compile(pattern), value.rstrip('"')))
+        self.assertIn("default $uri", body)
+
+        def logged(uri):
+            return next((value for regex, value in rules if regex.search(uri)), uri)
+
+        for uri in ("/subscriptions/" + "A" * 43 + "/sb.json", "/subscriptions/x", "/subscriptions",
+                    "/" + "a1" * 16 + "/sb.json", "/netdata/" + "b" * 24):
+            with self.subTest(uri=uri):
+                self.assertTrue(logged(uri).startswith(("/subscriptions/[redacted]", "[redacted")))
+        for uri in ("/", "/ops/", "/reports/data.json", "/arena/api/debate", "/netdata/api/v1/info"):
+            with self.subTest(uri=uri):
+                self.assertEqual(logged(uri), uri)
+
+    def test_private_subscription_locations_never_use_arena_log(self):
+        private = Path("/etc/nginx/private-subscriptions.conf")
+        try:
+            text = private.read_text()
+        except OSError:
+            self.skipTest("private subscription file is root-only on the host")
+        blocks = re.findall(r"(?ms)^location [^{]*\{\n(.*?)^\}", text)
+        self.assertGreater(len(blocks), 0)
+        for index, block in enumerate(blocks):
+            with self.subTest(block=index):
+                self.assertRegex(block, r"(?m)^\s*access_log (off|\S+ subscription_safe);")
+
     def test_arena_is_public_but_rate_limited(self):
         arena = self.location("location /")
         self.assertRegex(arena, r"(?m)^\s*auth_basic off;\s*$")
