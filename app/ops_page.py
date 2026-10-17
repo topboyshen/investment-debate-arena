@@ -60,6 +60,8 @@ OPS_PAGE = r'''<!doctype html>
   return message+(value.checkedAt?' · 复测 '+stamp(value.checkedAt)+'（北京时间）':'');
  }
  const probeFailure = check => check.id==='pi_requests' ? validationProbe(check.controlled_validation,'pi_research_completion').state==='warning' : check.id==='morning'&&validationProbe(check.source_validation,'vix_source').state==='warning';
+ // Same value renderChecks() shows on the morning / pi cards ("复测未验证" when not ok/warning).
+ const probeShownState = (check, uncertain) => check.id==='pi_requests'||check.id==='morning' ? validationProbe(uncertain?null:check.id==='pi_requests'?check.controlled_validation:check.source_validation,check.id==='pi_requests'?'pi_research_completion':'vix_source').state : null;
  const percent = (part, total) => num(part) && num(total) && total > 0 && part <= total ? part / total * 100 : null;
  const pct = value => num(value) && value <= 100 ? value.toFixed(1) + '%' : missing;
  const statusNames = {ok:'正常',warning:'需关注',error:'异常',unknown:'未采集',stale:'数据过期'};
@@ -99,7 +101,8 @@ OPS_PAGE = r'''<!doctype html>
   const active = services.filter(s => s.active_state === 'active').length;
   const inactive = services.filter(s => serviceLevel(s) === 'error' || serviceLevel(s) === 'warning').length;
   const attention = checks.filter(c => ['warning','error','stale'].includes(checkLevel(c)) || probeFailure(c)).length;
-  const unknown = services.filter(s => serviceLevel(s) === 'unknown').length + checks.filter(c => !Object.hasOwn(statusNames,checkLevel(c)) || checkLevel(c) === 'unknown').length;
+  const unknown = services.filter(s => serviceLevel(s) === 'unknown').length + checks.filter(c => !Object.hasOwn(statusNames,checkLevel(c)) || checkLevel(c) === 'unknown').length
+   + checks.filter(c => probeShownState(c, uncertain) === 'unknown').length;
   const incomplete = !services.length || !checks.length || unknown > 0;
   let label = uncertain ? '历史快照' : inactive || attention ? '需要关注' : incomplete ? '状态未完整验证' : '服务与巡检未见异常';
   el('summary-title').textContent = label;

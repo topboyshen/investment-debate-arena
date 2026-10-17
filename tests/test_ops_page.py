@@ -193,6 +193,44 @@ class OpsRendererTests(unittest.TestCase):
         self.assertEqual(result["elements"]["summary-title"]["text"], "状态未完整验证")
         self.assertNotIn("ok", result["elements"]["summary-badge"]["className"].split())
 
+    def test_unverified_probe_lines_prevent_healthy_summary(self):
+        # Production shape on 2026-10-17: checks ok, both probe receipts
+        # unverified; each card shows "复测未验证", so the summary must count them.
+        unverified = {
+            "vix_source": {"scope": "vix_source", "status": "unverified", "code": "vix_source_unverified",
+                           "checked_at": None, "expires_at": None, "source_as_of": None},
+            "pi_research_completion": {"scope": "pi_research_completion", "model": "xai/grok-4.6",
+                                       "status": "unverified", "code": "probe_error",
+                                       "checked_at": None, "expires_at": None},
+        }
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        for scopes, expected in ((("vix_source", "pi_research_completion"), 2), (("vix_source",), 1),
+                                 (("pi_research_completion",), 1), ((), 0)):
+            data = self.fixture()
+            data["checks"] += [
+                {"id": "morning", "label": "海外晨报", "status": "ok", "issues": [], "checked_at": now,
+                 "source_validation": unverified["vix_source"] if "vix_source" in scopes
+                 else self.probe_fixture("vix_source")},
+                {"id": "pi_requests", "label": "pi 请求结果", "status": "ok", "issues": [], "checked_at": now,
+                 "sample_status": "recent_success", "sample_window_seconds": 86400, "last_success_at": now,
+                 "controlled_validation": unverified["pi_research_completion"] if "pi_research_completion" in scopes
+                 else self.probe_fixture("pi_research_completion")},
+            ]
+            with self.subTest(scopes=scopes):
+                elements = self.render(data)["elements"]
+                copy = elements["summary-copy"]["text"]
+                self.assertEqual(elements["checks"]["text"].count("复测未验证"), expected)
+                self.assertIn("0 项巡检需关注", copy)
+                if expected:
+                    self.assertIn(f" · {expected} 项状态未验证", copy)
+                    self.assertEqual(elements["summary-title"]["text"], "状态未完整验证")
+                    self.assertEqual(elements["summary-badge"]["text"], "待验证")
+                    self.assertNotIn("未见异常", elements["summary-title"]["text"])
+                    self.assertNotIn("正常", elements["summary-badge"]["text"])
+                else:
+                    self.assertNotIn("项状态未验证", copy)
+                    self.assertEqual(elements["summary-title"]["text"], "服务与巡检未见异常")
+
     def test_explicit_unlimited_is_not_missing(self):
         data = self.fixture()
         data["services"][0]["memory_limit_unlimited"] = True
